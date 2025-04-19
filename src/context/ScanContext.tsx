@@ -1,7 +1,21 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { Scan, ScanResult, Report } from '@/types';
 import { useUI } from './UIContext';
 import { AIService } from '@/lib/ai';
+import { mockScans, mockScanResults, mockReports } from '@/data/mockData';
+
+// Helper function to process image files
+const processImageFile = async (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    try {
+      // Create a Blob URL for the uploaded image
+      const imageUrl = URL.createObjectURL(file);
+      resolve(imageUrl);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
 
 interface ScanContextProps {
   scans: Scan[];
@@ -17,7 +31,7 @@ interface ScanContextProps {
   generateReport: (resultId: string, patientSummary: string) => Promise<Report | null>;
 }
 
-const ScanContext = createContext<ScanContextProps | undefined>(undefined);
+const ScanContext = createContext<ScanContextProps | null>(null);
 
 export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [scans, setScans] = useState<Scan[]>([]);
@@ -27,43 +41,121 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
   const { addToast } = useUI();
 
-  // Upload a new scan
-  const uploadScan = useCallback(async (file: File, metadata: Partial<Scan>) => {
+  // Load scans from localStorage on initial load
+  useEffect(() => {
+    const loadPersistedScans = () => {
+      try {
+        // Load scans
+        const persistedScans = localStorage.getItem('medvision_scans');
+        if (persistedScans) {
+          setScans(JSON.parse(persistedScans));
+        } else {
+          // Initialize with mock data for demo purposes
+          setScans(mockScans);
+        }
+        
+        // Load scan results
+        const persistedResults = localStorage.getItem('medvision_scan_results');
+        if (persistedResults) {
+          setScanResults(JSON.parse(persistedResults));
+        } else {
+          setScanResults(mockScanResults);
+        }
+        
+        // Load reports
+        const persistedReports = localStorage.getItem('medvision_reports');
+        if (persistedReports) {
+          setReports(JSON.parse(persistedReports));
+        } else {
+          setReports(mockReports);
+        }
+      } catch (error) {
+        console.error("Failed to load persisted scans:", error);
+        setScans(mockScans);
+        setScanResults(mockScanResults);
+        setReports(mockReports);
+      }
+    };
+
+    loadPersistedScans();
+  }, []);
+
+  // Save scans to localStorage whenever they change
+  useEffect(() => {
+    if (scans.length > 0) {
+      localStorage.setItem('medvision_scans', JSON.stringify(scans));
+    }
+  }, [scans]);
+
+  // Save scan results to localStorage whenever they change
+  useEffect(() => {
+    if (scanResults.length > 0) {
+      localStorage.setItem('medvision_scan_results', JSON.stringify(scanResults));
+    }
+  }, [scanResults]);
+
+  // Save reports to localStorage whenever they change
+  useEffect(() => {
+    if (reports.length > 0) {
+      localStorage.setItem('medvision_reports', JSON.stringify(reports));
+    }
+  }, [reports]);
+
+  // Modified uploadScan to automatically start analysis
+  const uploadScan = useCallback(async (file: File, metadata: Partial<Scan>): Promise<Scan> => {
     setLoading(true);
     setError(null);
     
     try {
-      // Create a Blob URL for the uploaded image
-      const imageUrl = URL.createObjectURL(file);
+      const imageUrl = await processImageFile(file);
       
-      // Create a new scan with the Blob URL
       const newScan: Scan = {
         id: `scan-${Date.now()}`,
-        userId: metadata.userId || '',
+        userId: metadata.userId || 'user-1',
         patientId: metadata.patientId,
-        type: metadata.type as 'xray' | 'ct' | 'mri' | 'ultrasound' | 'other',
-        bodyPart: metadata.bodyPart || '',
+        type: metadata.type || 'other',
+        bodyPart: metadata.bodyPart || 'unknown',
         originalImage: imageUrl,
+        status: 'uploaded',
         uploadedAt: new Date().toISOString(),
-        status: 'uploaded'
+        metadata: metadata.metadata || {
+          fileSize: `${Math.round(file.size / 1024)} KB`,
+          dimensions: '1024 x 1024 px',
+          format: file.type.split('/')[1]?.toUpperCase() || 'JPEG',
+          captureDate: new Date().toISOString()
+        }
       };
       
       setScans(prev => [...prev, newScan]);
+      
       addToast({
-        title: 'Image Uploaded',
-        description: 'Your medical image has been successfully uploaded.',
+        title: 'Upload Successful',
+        description: 'Your scan has been uploaded successfully.',
         type: 'success'
       });
       
+      // Automatically start analysis after upload
+      setTimeout(() => {
+        analyzeScan(newScan.id)
+          .then(() => {
+            console.log("Auto-analysis completed for scan:", newScan.id);
+          })
+          .catch(error => {
+            console.error("Auto-analysis failed:", error);
+          });
+      }, 1000);
+      
       return newScan;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to upload image';
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload scan';
       setError(errorMessage);
+      
       addToast({
         title: 'Upload Failed',
         description: errorMessage,
         type: 'error'
       });
+      
       throw error;
     } finally {
       setLoading(false);
@@ -110,7 +202,7 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
         scanId,
         abnormalitiesDetected: scanDetails.abnormalitiesDetected,
         confidenceScore: 0.95, // High confidence for AI analysis
-        aiModel: 'Google Gemini 2.5 Pro',
+        aiModel: '',
         findings: scanDetails.findings,
         severity: scanDetails.severity,
         triagePriority: scanDetails.abnormalitiesDetected ? 7 : 2, // Higher priority if abnormalities found
@@ -490,7 +582,7 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useScan = () => {
   const context = useContext(ScanContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error('useScan must be used within a ScanProvider');
   }
   return context;
