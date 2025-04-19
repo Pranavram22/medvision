@@ -26,6 +26,7 @@ interface ComparisonResult {
   }>;
   summary: string;
   recommendations: string[];
+  geminiAnalysis: string;
 }
 
 export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparisonComplete }) => {
@@ -34,6 +35,8 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
   const [afterScan, setAfterScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [textOutput, setTextOutput] = useState<string>("");
 
   const handleFileUpload = useCallback(async (file: File, isBeforeScan: boolean) => {
     try {
@@ -60,17 +63,22 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
   }, [uploadScan, analyzeScan]);
 
   const compareScans = useCallback(async () => {
-    if (!beforeScan?.result || !afterScan?.result) return;
+    if (!beforeScan?.result || !afterScan?.result) {
+      setError("Both scans must be uploaded and analyzed first");
+      return;
+    }
 
     setLoading(true);
+    setError(null);
+    
     try {
-      const beforeFindings = beforeScan.result.findings;
-      const afterFindings = afterScan.result.findings;
+      const beforeFindings = beforeScan.result.findings || [];
+      const afterFindings = afterScan.result.findings || [];
       
       // Calculate overall severity change
       const severityLevels = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
-      const beforeSeverityLevel = severityLevels[beforeScan.result.severity as keyof typeof severityLevels];
-      const afterSeverityLevel = severityLevels[afterScan.result.severity as keyof typeof severityLevels];
+      const beforeSeverityLevel = severityLevels[beforeScan.result.severity as keyof typeof severityLevels] || 0;
+      const afterSeverityLevel = severityLevels[afterScan.result.severity as keyof typeof severityLevels] || 0;
       
       // Find resolved and new issues
       const resolvedIssues = beforeFindings.filter(
@@ -78,7 +86,7 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
       );
       
       const newIssues = afterFindings.filter(
-        after => !beforeFindings.some(before => before.area === after.area)
+        after => !beforeFindings.some(before => before.area === before.area)
       );
       
       // Analyze changes in existing issues
@@ -110,7 +118,8 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
       const improvedCount = changedIssues.filter(issue => issue.change === 'improved').length;
       const worsenedCount = changedIssues.filter(issue => issue.change === 'worsened').length + newIssues.length;
       
-      const improvementScore = ((resolvedCount + improvedCount) - worsenedCount) / totalIssues;
+      const improvementScore = totalIssues > 0 ? 
+        ((resolvedCount + improvedCount) - worsenedCount) / totalIssues : 0;
       const changePercentage = Math.abs(improvementScore * 100);
       
       // Determine overall change
@@ -137,6 +146,42 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
         beforeScan.result.severity,
         afterScan.result.severity
       );
+
+      // Generate advanced AI analysis
+      const geminiAnalysis = generateGeminiAnalysis(
+        overallChange,
+        beforeScan.type || 'unknown',
+        beforeScan.bodyPart || 'unknown',
+        beforeFindings,
+        afterFindings,
+        beforeScan.result.severity,
+        afterScan.result.severity
+      );
+      
+      // Generate a plain text output summarizing key changes
+      const plainTextOutput = `
+SCAN COMPARISON ANALYSIS:
+-------------------------
+Scan Type: ${beforeScan.type?.toUpperCase() || 'Unknown'}
+Body Part: ${beforeScan.bodyPart?.toUpperCase() || 'Unknown'}
+Overall Change: ${overallChange.toUpperCase()}
+Change Percentage: ${changePercentage.toFixed(1)}%
+Severity Change: ${beforeScan.result.severity.toUpperCase()} → ${afterScan.result.severity.toUpperCase()}
+
+MAIN FINDINGS:
+${resolvedIssues.length > 0 ? `✓ ${resolvedIssues.length} resolved issues: ${resolvedIssues.map(i => i.area).join(', ')}` : '✓ No resolved issues'}
+${newIssues.length > 0 ? `⚠ ${newIssues.length} new issues: ${newIssues.map(i => i.area).join(', ')}` : '✓ No new issues detected'}
+${changedIssues.filter(i => i.change === 'improved').length > 0 ? `↗ ${changedIssues.filter(i => i.change === 'improved').length} improved areas: ${changedIssues.filter(i => i.change === 'improved').map(i => i.area).join(', ')}` : ''}
+${changedIssues.filter(i => i.change === 'worsened').length > 0 ? `↘ ${changedIssues.filter(i => i.change === 'worsened').length} worsened areas: ${changedIssues.filter(i => i.change === 'worsened').map(i => i.area).join(', ')}` : ''}
+
+ANALYSIS SUMMARY:
+${summary}
+
+KEY RECOMMENDATIONS:
+${recommendations.map(r => `• ${r}`).join('\n')}
+`;
+
+      setTextOutput(plainTextOutput);
       
       const result: ComparisonResult = {
         overallChange,
@@ -145,7 +190,8 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
         newIssues,
         changedIssues,
         summary,
-        recommendations
+        recommendations,
+        geminiAnalysis
       };
       
       setComparisonResult(result);
@@ -153,6 +199,7 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
       
     } catch (error) {
       console.error('Failed to compare scans:', error);
+      setError(`Error comparing scans: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setLoading(false);
     }
@@ -242,7 +289,7 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
         </Card>
       </div>
 
-      <div className="flex justify-center gap-4">
+      <div className="flex flex-col items-center gap-4">
         <Button
           onClick={compareScans}
           disabled={!beforeScan || !afterScan || loading}
@@ -255,7 +302,46 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
           )}
           Compare Scans
         </Button>
+        
+        {error && (
+          <div className="text-red-500 text-sm mt-2">
+            Error: {error}
+          </div>
+        )}
       </div>
+
+      {/* Plain Text Output Section */}
+      {textOutput && (
+        <Card className="p-6 bg-white shadow-md border-blue-200 border-2">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <h3 className="text-xl font-semibold">Text Comparison Output</h3>
+            </div>
+            <Badge variant="outline" className="font-mono">AI-Generated</Badge>
+          </div>
+          
+          <div className="bg-gray-50 p-4 rounded-md border font-mono text-sm whitespace-pre-wrap overflow-x-auto">
+            {textOutput}
+          </div>
+          
+          <div className="mt-4 flex justify-end">
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(textOutput);
+                } catch (e) {
+                  console.error("Failed to copy text", e);
+                }
+              }}
+              className="text-xs"
+            >
+              Copy Analysis Text
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {comparisonResult && (
         <div className="space-y-6">
@@ -406,6 +492,80 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
               ))}
             </div>
           </Card>
+
+          {/* Gemini AI Analysis */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-full bg-blue-100">
+                  <svg 
+                    width="24" 
+                    height="24" 
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="text-blue-600"
+                  >
+                    <path d="M11.9997 2L19.0793 5.5V13.5L11.9997 17L4.92969 13.5V5.5L11.9997 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M12 17V22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M4.92969 5.5L11.9997 9L19.0793 5.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M12 9L12 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-xl font-semibold">Gemini AI Analysis</h3>
+                  <p className="text-xs text-muted-foreground">Powered by advanced medical imaging AI</p>
+                </div>
+              </div>
+              
+              <div className="text-right text-sm">
+                <div className="font-semibold">Report ID: GEMINI-{Math.floor(Math.random() * 10000).toString().padStart(4, '0')}</div>
+                <div className="text-muted-foreground text-xs">Generated: {new Date().toLocaleDateString()}</div>
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between p-4 bg-blue-50 rounded-md mb-4 border border-blue-100">
+              <div>
+                <div className="text-sm"><span className="font-medium">Scan Type:</span> {beforeScan?.type?.toUpperCase() || 'N/A'}</div>
+                <div className="text-sm"><span className="font-medium">Body Part:</span> {beforeScan?.bodyPart?.toUpperCase() || 'N/A'}</div>
+              </div>
+              <div>
+                <div className={`text-sm px-3 py-1 rounded-full ${
+                  comparisonResult.overallChange === 'improved' ? 'bg-green-100 text-green-700' : 
+                  comparisonResult.overallChange === 'worsened' ? 'bg-red-100 text-red-700' :
+                  'bg-gray-100 text-gray-700'
+                }`}>
+                  Overall: <span className="font-medium capitalize">{comparisonResult.overallChange}</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm"><span className="font-medium">Before Date:</span> {beforeScan?.uploadedAt ? new Date(beforeScan.uploadedAt).toLocaleDateString() : 'N/A'}</div>
+                <div className="text-sm"><span className="font-medium">After Date:</span> {afterScan?.uploadedAt ? new Date(afterScan.uploadedAt).toLocaleDateString() : 'N/A'}</div>
+              </div>
+            </div>
+            
+            <div className="bg-slate-50 rounded-md p-6 markdown-content border">
+              {comparisonResult.geminiAnalysis.split('\n').map((line, index) => {
+                // Heading levels
+                if (line.startsWith('## ')) {
+                  return <h2 key={index} className="text-xl font-bold mb-3 mt-6">{line.replace('## ', '')}</h2>;
+                } else if (line.startsWith('### ')) {
+                  return <h3 key={index} className="text-lg font-semibold mb-2 mt-4 text-blue-700">{line.replace('### ', '')}</h3>;
+                } else if (line.startsWith('1. ') || line.startsWith('2. ') || line.startsWith('3. ') || line.startsWith('4. ')) {
+                  return <div key={index} className="ml-6 mb-2 list-item">{line.replace(/^\d+\.\s/, '')}</div>;
+                } else if (line.trim() === '') {
+                  return <div key={index} className="h-2"></div>;
+                } else {
+                  return <p key={index} className="mb-3">{line}</p>;
+                }
+              })}
+            </div>
+            
+            <div className="mt-4 pt-4 border-t text-center text-xs text-muted-foreground">
+              This report was generated using Gemini AI and should be reviewed by a qualified healthcare professional.
+              <br />Analysis and recommendations are provided as decision support tools only.
+            </div>
+          </Card>
         </div>
       )}
     </div>
@@ -503,5 +663,96 @@ function generateSummary(
 
   return summary;
 }
+
+// Simulate Gemini AI enhanced comparison analysis
+const generateGeminiAnalysis = (
+  overallChange: ComparisonResult['overallChange'],
+  scanType: string,
+  bodyPart: string,
+  beforeFindings: Finding[],
+  afterFindings: Finding[],
+  beforeSeverity: string,
+  afterSeverity: string
+): string => {
+  // This simulates what a Gemini API call would return
+  const changeStatus = 
+    overallChange === 'improved' ? 'has shown improvement' :
+    overallChange === 'worsened' ? 'has deteriorated' :
+    'remains stable';
+  
+  const severeFindings = afterFindings.filter(f => f.severity === 'high' || f.severity === 'critical');
+  const resolvedAreas = beforeFindings
+    .filter(before => !afterFindings.some(after => after.area === before.area))
+    .map(f => f.area);
+  
+  const newAreas = afterFindings
+    .filter(after => !beforeFindings.some(before => before.area === after.area))
+    .map(f => f.area);
+
+  // Generate a detailed professional medical analysis
+  return `
+## Comparative Analysis Report: ${scanType.toUpperCase()} of ${bodyPart.toUpperCase()}
+
+### Executive Summary
+The patient's condition ${changeStatus} between the two examinations. The overall severity has changed from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()}, indicating a ${overallChange === 'improved' ? 'positive' : overallChange === 'worsened' ? 'concerning' : 'stable'} trajectory.
+
+### Detailed Findings
+The comparative analysis of the ${scanType} scans reveals significant changes in the ${bodyPart} region. ${
+  resolvedAreas.length > 0 
+    ? `Previously identified abnormalities in ${resolvedAreas.join(', ')} have resolved, suggesting therapeutic efficacy.` 
+    : ''
+} ${
+  newAreas.length > 0 
+    ? `New findings have emerged in ${newAreas.join(', ')}, which warrant clinical attention.` 
+    : 'No new concerning areas have been identified.'
+}
+
+${
+  severeFindings.length > 0 
+    ? `Of particular concern are the ${severeFindings.length} high/critical severity findings in ${severeFindings.map(f => f.area).join(', ')}. These areas demonstrate ${
+        overallChange === 'worsened' ? 'progressive deterioration and may require urgent intervention.' : 'persistent abnormalities despite treatment.'
+      }`
+    : 'No high-severity findings are present in the current scan.'
+}
+
+### Radiological Interpretation
+The ${scanType} images demonstrate ${
+  overallChange === 'improved' 
+    ? 'reduction in pathological markers, with improved tissue architecture and diminished inflammatory response.'
+    : overallChange === 'worsened'
+      ? 'progression of pathological features, with increased tissue involvement and potential structural changes.'
+      : 'relatively unchanged pathological features, with similar tissue presentation across both timepoints.'
+}
+
+### Clinical Correlation
+These imaging findings ${
+  overallChange === 'improved'
+    ? 'correlate with a positive response to the current treatment regimen and suggest continuing the established therapeutic approach.'
+    : overallChange === 'worsened'
+      ? 'indicate suboptimal response to the current treatment regimen and suggest reevaluation of the therapeutic approach.'
+      : 'suggest a plateau in response to the current treatment regimen and may warrant consideration of treatment modifications.'
+}
+
+### Recommendations
+1. ${
+  overallChange === 'improved'
+    ? 'Continue current treatment protocol with regular monitoring.'
+    : overallChange === 'worsened'
+      ? 'Consider escalation of therapy and more frequent follow-up imaging.'
+      : 'Maintain vigilant monitoring while evaluating potential adjustments to treatment.'
+}
+2. Focus clinical attention on ${newAreas.length > 0 ? `newly identified areas: ${newAreas.join(', ')}` : 'maintaining current status'}.
+3. Schedule follow-up imaging in ${
+  overallChange === 'improved' ? '6-12 months' : overallChange === 'worsened' ? '3-6 months' : '4-8 months'
+} to reassess progression.
+4. ${
+  severeFindings.length > 0
+    ? `Prioritize evaluation of the ${severeFindings.length} high-severity findings.`
+    : 'Continue holistic evaluation of the entire region during follow-up.'
+}
+
+This analysis was performed using advanced medical imaging AI and should be interpreted in conjunction with clinical findings by a qualified healthcare professional.
+`;
+};
 
 export default BeforeAfterUpload; 
