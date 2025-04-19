@@ -2,19 +2,30 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { Scan, ScanResult, Report } from '@/types';
 import { useUI } from './UIContext';
 import { AIService } from '@/lib/ai';
-import { mockScans, mockScanResults, mockReports } from '@/data/mockData';
+import { mockScans, mockScanResults, mockReports, initializeMockData } from '@/data/mockData';
+import {
+  processAndStoreImage,
+  getImageData,
+  storeScansMetadata,
+  getScansMetadata,
+  revokeImageUrl,
+  cleanupUnusedImages
+} from '@/lib/storage';
 
-// Helper function to process image files
-const processImageFile = async (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    try {
-      // Create a Blob URL for the uploaded image
-      const imageUrl = URL.createObjectURL(file);
-      resolve(imageUrl);
-    } catch (error) {
-      reject(error);
-    }
-  });
+// Helper function to fetch and create blob URLs for scans
+const hydrateScansWithImages = async (scans: Scan[]): Promise<Scan[]> => {
+  const hydratedScans = await Promise.all(
+    scans.map(async (scan) => {
+      try {
+        const imageUrl = await getImageData(scan.id);
+        return { ...scan, originalImage: imageUrl || scan.originalImage };
+      } catch (error) {
+        console.error(`Failed to hydrate scan ${scan.id}:`, error);
+        return scan;
+      }
+    })
+  );
+  return hydratedScans;
 };
 
 interface ScanContextProps {
@@ -41,110 +52,108 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
   const { addToast } = useUI();
 
-  // Load scans from localStorage on initial load
+  // Load scans from storage on initial load
   useEffect(() => {
-    const loadPersistedScans = () => {
+    const loadPersistedData = async () => {
       try {
-        // Load scans
-        const persistedScans = localStorage.getItem('medvision_scans');
-        if (persistedScans) {
-          setScans(JSON.parse(persistedScans));
-        } else {
-          // Initialize with mock data for demo purposes
-          setScans(mockScans);
-        }
+        setLoading(true);
+        // Load scans metadata
+        const persistedScans = getScansMetadata();
         
-        // Load scan results
-        const persistedResults = localStorage.getItem('medvision_scan_results');
-        if (persistedResults) {
-          setScanResults(JSON.parse(persistedResults));
-        } else {
+        if (persistedScans.length === 0) {
+          // Initialize mock data if no persisted data exists
+          await initializeMockData();
+          const hydratedMockScans = await hydrateScansWithImages(mockScans);
+          setScans(hydratedMockScans);
+          storeScansMetadata(mockScans);
+          
+          // Store mock results and reports
+          localStorage.setItem('medvision_scan_results', JSON.stringify(mockScanResults));
+          localStorage.setItem('medvision_reports', JSON.stringify(mockReports));
+          
           setScanResults(mockScanResults);
-        }
-        
-        // Load reports
-        const persistedReports = localStorage.getItem('medvision_reports');
-        if (persistedReports) {
-          setReports(JSON.parse(persistedReports));
-        } else {
           setReports(mockReports);
+        } else {
+          // Hydrate persisted scans with image data
+          const hydratedScans = await hydrateScansWithImages(persistedScans);
+          setScans(hydratedScans);
+          
+          // Load persisted results and reports
+          const persistedResults = localStorage.getItem('medvision_scan_results');
+          const persistedReports = localStorage.getItem('medvision_reports');
+          
+          setScanResults(persistedResults ? JSON.parse(persistedResults) : []);
+          setReports(persistedReports ? JSON.parse(persistedReports) : []);
         }
       } catch (error) {
-        console.error("Failed to load persisted scans:", error);
-        setScans(mockScans);
-        setScanResults(mockScanResults);
-        setReports(mockReports);
+        console.error("Failed to load persisted data:", error);
+        setError("Failed to load scan data. Please refresh the page.");
+        addToast({
+          title: 'Error',
+          description: 'Failed to load scan data. Please refresh the page.',
+          type: 'error'
+        });
+      } finally {
+        setLoading(false);
       }
     };
 
-    loadPersistedScans();
-  }, []);
+    loadPersistedData();
 
-  // Save scans to localStorage whenever they change
+    // Cleanup function to revoke blob URLs
+    return () => {
+      scans.forEach(scan => {
+        if (scan.originalImage?.startsWith('blob:')) {
+          revokeImageUrl(scan.originalImage);
+        }
+      });
+    };
+  }, [addToast]);
+
+  // Save scans to storage whenever they change
   useEffect(() => {
     if (scans.length > 0) {
-      localStorage.setItem('medvision_scans', JSON.stringify(scans));
+      // Store metadata without blob URLs
+      const metadataScans = scans.map(({ originalImage, ...scan }) => ({
+        ...scan,
+        originalImage: '' // Don't store blob URLs in metadata
+      }));
+      storeScansMetadata(metadataScans);
+      
+      // Clean up unused images
+      cleanupUnusedImages(scans);
     }
   }, [scans]);
 
-  // Save scan results to localStorage whenever they change
-  useEffect(() => {
-    if (scanResults.length > 0) {
-      localStorage.setItem('medvision_scan_results', JSON.stringify(scanResults));
-    }
-  }, [scanResults]);
-
-  // Save reports to localStorage whenever they change
-  useEffect(() => {
-    if (reports.length > 0) {
-      localStorage.setItem('medvision_reports', JSON.stringify(reports));
-    }
-  }, [reports]);
-
-  // Modified uploadScan to automatically start analysis
   const uploadScan = useCallback(async (file: File, metadata: Partial<Scan>): Promise<Scan> => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      const imageUrl = await processImageFile(file);
-      
+      const scanId = `scan-${Date.now()}`;
+      // Process and store the image
+      const imageUrl = await processAndStoreImage(URL.createObjectURL(file), scanId);
+
+      // Create new scan object
       const newScan: Scan = {
-        id: `scan-${Date.now()}`,
-        userId: metadata.userId || 'user-1',
-        patientId: metadata.patientId,
+        id: scanId,
+        userId: metadata.userId || '',
         type: metadata.type || 'other',
         bodyPart: metadata.bodyPart || 'unknown',
         originalImage: imageUrl,
-        status: 'uploaded',
         uploadedAt: new Date().toISOString(),
-        metadata: metadata.metadata || {
-          fileSize: `${Math.round(file.size / 1024)} KB`,
-          dimensions: '1024 x 1024 px',
-          format: file.type.split('/')[1]?.toUpperCase() || 'JPEG',
-          captureDate: new Date().toISOString()
-        }
+        status: 'uploaded',
+        ...metadata
       };
-      
+
       setScans(prev => [...prev, newScan]);
-      
+
       addToast({
         title: 'Upload Successful',
         description: 'Your scan has been uploaded successfully.',
         type: 'success'
       });
-      
-      // Automatically start analysis after upload
-      setTimeout(() => {
-        analyzeScan(newScan.id)
-          .then(() => {
-            console.log("Auto-analysis completed for scan:", newScan.id);
-          })
-          .catch(error => {
-            console.error("Auto-analysis failed:", error);
-          });
-      }, 1000);
-      
+
       return newScan;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to upload scan';

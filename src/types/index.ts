@@ -25,10 +25,19 @@ export interface Scan {
   type: 'xray' | 'ct' | 'mri' | 'ultrasound' | 'other';
   bodyPart: string;
   originalImage: string;
+  processedImage?: string; // Processed version of the image (e.g., enhanced, normalized)
   thumbnailImage?: string;
   uploadedAt: string;
   metadata?: Record<string, any>;
-  status: 'uploaded' | 'processing' | 'analyzed' | 'reviewed';
+  status: 'uploaded' | 'processing' | 'analyzed' | 'reviewed' | 'completed';
+  result?: ScanResult;
+  report?: string;
+}
+
+export interface DetectedArea {
+  severity: 'low' | 'medium' | 'high';
+  description: string;
+  coordinates: { x: number; y: number };
 }
 
 export interface ScanResult {
@@ -50,6 +59,9 @@ export interface ScanResult {
   reportId?: string;
   processedAt: string;
   rawAnalysis?: string; // Raw text from the AI analysis
+  detectedAreas?: DetectedArea[];
+  confidence?: number;
+  analysisDate?: string;
 }
 
 export interface Finding {

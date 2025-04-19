@@ -15,7 +15,7 @@ const UIContext = createContext<UIContextProps | undefined>(undefined);
 
 export const UIProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [darkMode, setDarkMode] = useState(() => {
-    const savedMode = localStorage.getItem('smartmedDarkMode');
+    const savedMode = localStorage.getItem('medvisionDarkMode');
     return savedMode ? JSON.parse(savedMode) : window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
 
@@ -26,7 +26,7 @@ export const UIProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const toggleDarkMode = useCallback(() => {
     const newMode = !darkMode;
     setDarkMode(newMode);
-    localStorage.setItem('smartmedDarkMode', JSON.stringify(newMode));
+    localStorage.setItem('medvisionDarkMode', JSON.stringify(newMode));
     
     // Apply or remove dark class to document
     if (newMode) {

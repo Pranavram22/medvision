@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,6 +10,7 @@ import { BrainCircuit, AlertCircle } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 export function LoginPage() {
+  const navigate = useNavigate();
   const { authState, login, signup } = useAuth();
   const { loading, error } = authState;
   
@@ -25,7 +27,11 @@ export function LoginPage() {
   
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    await login(loginEmail, loginPassword);
+    const success = await login(loginEmail, loginPassword);
+    
+    if (success) {
+      navigate('/');
+    }
   };
   
   const handleSignup = async (e: React.FormEvent) => {
@@ -87,7 +93,7 @@ export function LoginPage() {
           <div className="flex items-center gap-2">
             <BrainCircuit className="h-8 w-8 text-primary" />
             <div className="flex flex-col">
-              <span className="font-bold text-2xl">SmartMed+</span>
+              <span className="font-bold text-2xl">MedVision</span>
               <span className="text-xs text-muted-foreground">AI-Powered Medical Diagnostics</span>
             </div>
           </div>
@@ -148,9 +154,9 @@ export function LoginPage() {
                     <p className="font-medium mb-1">Quick login accounts:</p>
                     <p className="mb-1">Password for all accounts: <span className="font-bold">password123</span></p>
                     <ul className="list-disc list-inside">
-                      <li>doctor@smartmed.com (Doctor view)</li>
-                      <li>patient@smartmed.com (Patient view)</li>
-                      <li>admin@smartmed.com (Admin view)</li>
+                     
+                      <li>demo account -  patient@medvision.ai (Patient view)</li>
+                      
                     </ul>
                   </div>
                 </CardContent>
@@ -172,7 +178,7 @@ export function LoginPage() {
               <CardHeader>
                 <CardTitle>Create an account</CardTitle>
                 <CardDescription>
-                  Sign up to access SmartMed+ services
+                  Sign up to access MedVision services
                 </CardDescription>
               </CardHeader>
               <form onSubmit={handleSignup}>

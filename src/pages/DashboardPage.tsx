@@ -5,6 +5,7 @@ import { ScanList } from '@/components/scan/ScanList';
 import { ScanDetail } from '@/components/scan/ScanDetail';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/context/AuthContext';
+import { useScan } from '@/context/ScanContext';
 
 export function DashboardPage() {
   const { authState } = useAuth();

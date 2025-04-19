@@ -103,14 +103,10 @@ export function RecentActivity({ limit = 10 }: { limit?: number }) {
       medium: 'bg-yellow-500',
       low: 'bg-blue-500',
       normal: 'bg-green-500'
-    } as const;
-    
-    // Use type assertion to fix the TypeScript error
-    const validSeverity = severity as keyof typeof colorMap;
-    const colorClass = colorMap[validSeverity] || 'bg-gray-500';
+    };
     
     return (
-      <Badge className={colorClass}>
+      <Badge className={colorMap[severity] || 'bg-gray-500'}>
         {severity}
       </Badge>
     );

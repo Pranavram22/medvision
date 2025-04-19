@@ -24,7 +24,7 @@ export function Header() {
       <div className="container flex h-14 items-center">
         <Link to="/" className="flex items-center gap-2 font-semibold">
           <BrainCircuit className="h-6 w-6" />
-          <span>SmartMed+</span>
+          <span>MedVision</span>
         </Link>
         
         <div className="flex flex-1 items-center justify-between space-x-2 md:justify-end">

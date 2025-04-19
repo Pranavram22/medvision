@@ -23,7 +23,7 @@ export class AIService {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
         'HTTP-Referer': window.location.origin,
-        'X-Title': 'SmartMed+ AI Diagnostics',
+        'X-Title': 'MedVision AI Diagnostics',
       },
       body: JSON.stringify(body),
     });

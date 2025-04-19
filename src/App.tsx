@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { MainLayout } from '@/components/layout/MainLayout';
@@ -7,7 +7,10 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { UIProvider } from '@/context/UIContext';
 import { ScanProvider } from '@/context/ScanContext';
 
-function AppContent() {
+// Import your other pages
+import ComparePage from '@/app/reports/compare/page';
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authState } = useAuth();
   const { isAuthenticated, loading } = authState;
   
@@ -20,13 +23,23 @@ function AppContent() {
   }
   
   if (!isAuthenticated) {
-    return <LoginPage />;
+    return <Navigate to="/login" replace />;
   }
   
+  return <MainLayout>{children}</MainLayout>;
+}
+
+function AppContent() {
   return (
-    <MainLayout>
-      <DashboardPage />
-    </MainLayout>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      
+      {/* Protected Routes */}
+      <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+      <Route path="/reports/compare" element={<ProtectedRoute><ComparePage /></ProtectedRoute>} />
+      
+      {/* Add more routes as needed */}
+    </Routes>
   );
 }
 

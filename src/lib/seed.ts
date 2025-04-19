@@ -9,17 +9,17 @@ const DEFAULT_PASSWORD = 'password123';
 
 const DEFAULT_USERS = [
   {
-    email: 'doctor@smartmed.com',
+    email: 'doctor@medvision.com',
     name: 'Dr. John Smith',
     role: 'doctor',
   },
   {
-    email: 'patient@smartmed.com',
+    email: 'patient@medvision.com',
     name: 'Alice Johnson',
     role: 'patient',
   },
   {
-    email: 'admin@smartmed.com',
+    email: 'admin@medvision.com',
     name: 'Admin User',
     role: 'admin',
   },

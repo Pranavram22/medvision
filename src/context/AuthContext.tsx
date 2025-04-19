@@ -4,7 +4,7 @@ import { useUI } from './UIContext';
 
 interface AuthContextProps {
   authState: AuthState;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
   signup: (userData: Partial<User>, password: string) => Promise<void>;
 }
@@ -15,21 +15,21 @@ const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 const MOCK_USERS = {
   patient: {
     id: 'mock-patient-id',
-    email: 'patient@smartmed.com',
+    email: 'patient@medvision.ai',
     name: 'Alice Johnson',
     role: 'patient' as const,
     createdAt: new Date().toISOString(),
   },
   doctor: {
     id: 'mock-doctor-id',
-    email: 'doctor@smartmed.com',
+    email: 'doctor@medvision.ai',
     name: 'Dr. John Smith',
     role: 'doctor' as const,
     createdAt: new Date().toISOString(),
   },
   admin: {
     id: 'mock-admin-id',
-    email: 'admin@smartmed.com',
+    email: 'admin@medvision.ai',
     name: 'Admin User',
     role: 'admin' as const,
     createdAt: new Date().toISOString(),
@@ -75,7 +75,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           description: `Logged in as ${user.name}`,
           type: 'success',
         });
-        return;
+        return true;
       }
       
       throw new Error('Invalid email or password');
@@ -92,6 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         description: error instanceof Error ? error.message : 'Failed to login',
         type: 'error',
       });
+      return false;
     }
   };
 
