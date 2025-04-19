@@ -49,6 +49,7 @@ export function Sidebar() {
         { id: 'my-scans', label: 'My Scans', icon: <FileHeart className="h-5 w-5" />, href: '/scans' },
         { id: 'my-reports', label: 'My Reports', icon: <FileText className="h-5 w-5" />, href: '/reports' },
         { id: 'compare-scans', label: 'Compare Scans', icon: <ArrowLeftRight className="h-5 w-5" />, href: '/reports/compare' },
+        { id: 'Segmentation analysis', label: 'Segmentation analysis', icon: <History className="h-5 w-5" />, href: 'https://752af7f859166d9325.gradio.live' },
       ],
     };
     
