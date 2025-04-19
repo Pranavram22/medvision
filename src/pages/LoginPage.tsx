@@ -154,9 +154,9 @@ export function LoginPage() {
                     <p className="font-medium mb-1">Quick login accounts:</p>
                     <p className="mb-1">Password for all accounts: <span className="font-bold">password123</span></p>
                     <ul className="list-disc list-inside">
-                     
-                      <li>demo account -  patient@medvision.ai (Patient view)</li>
-                      
+                      <li>doctor@medvision.ai (Doctor view)</li>
+                      <li>patient@medvision.ai (Patient view)</li>
+                      <li>admin@medvision.ai (Admin view)</li>
                     </ul>
                   </div>
                 </CardContent>

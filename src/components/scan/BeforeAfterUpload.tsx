@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Upload, ArrowRight, RefreshCw, TrendingDown, TrendingUp, Minus, AlertTriangle } from 'lucide-react';
 import { useScan } from '@/context/ScanContext';
+import { useUI } from '@/context/UIContext';
 import { Scan, Finding } from '@/types';
 import { cn } from '@/lib/utils';
 import { Progress } from '@/components/ui/progress';
@@ -23,24 +24,80 @@ interface ComparisonResult {
     after: Finding;
     change: 'improved' | 'worsened' | 'stable';
     changePercentage: number;
+    changeFactors: {
+      severityChange: number;
+      confidenceChange: number;
+      descriptionChange: number;
+    };
   }>;
   summary: string;
   recommendations: string[];
   geminiAnalysis: string;
 }
 
+// Add helper function for generating detailed analysis
+function generateDetailedAnalysis(
+  overallChange: 'improved' | 'worsened' | 'stable',
+  changePercentage: number,
+  beforeSeverity: string,
+  afterSeverity: string,
+  resolvedCount: number,
+  newIssuesCount: number,
+  improvedCount: number,
+  worsenedCount: number
+): string[] {
+  const analysis: string[] = [];
+  
+  // Overall Status
+  analysis.push(`Overall Status: ${overallChange.toUpperCase()}`);
+  
+  // Change Magnitude
+  analysis.push(`Change Magnitude: ${changePercentage.toFixed(1)}% ${
+    changePercentage >= 75 ? "(Major Change)" :
+    changePercentage >= 50 ? "(Significant Change)" :
+    changePercentage >= 25 ? "(Moderate Change)" :
+    "(Minor Change)"
+  }`);
+  
+  // Severity Progression
+  if (beforeSeverity !== afterSeverity) {
+    analysis.push(`Severity Progression: ${beforeSeverity.toUpperCase()} → ${afterSeverity.toUpperCase()}`);
+  } else {
+    analysis.push(`Severity Status: Maintained at ${afterSeverity.toUpperCase()}`);
+  }
+  
+  // Issue Distribution
+  analysis.push(`Issue Distribution:
+  • Resolved Issues: ${resolvedCount}
+  • New Issues: ${newIssuesCount}
+  • Improved Areas: ${improvedCount}
+  • Worsened Areas: ${worsenedCount}`);
+  
+  // Trend Analysis
+  const totalChanges = resolvedCount + newIssuesCount + improvedCount + worsenedCount;
+  const positiveChanges = resolvedCount + improvedCount;
+  const negativeChanges = newIssuesCount + worsenedCount;
+  
+  analysis.push(`Change Pattern:
+  • Total Changes: ${totalChanges}
+  • Positive Changes: ${positiveChanges} (${((positiveChanges/Math.max(totalChanges, 1))*100).toFixed(1)}%)
+  • Negative Changes: ${negativeChanges} (${((negativeChanges/Math.max(totalChanges, 1))*100).toFixed(1)}%)`);
+  
+  return analysis;
+}
+
 export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparisonComplete }) => {
-  const { uploadScan, analyzeScan } = useScan();
+  const { uploadScan, analyzeScan, scanResults } = useScan();
+  const { addToast } = useUI();
   const [beforeScan, setBeforeScan] = useState<Scan | null>(null);
   const [afterScan, setAfterScan] = useState<Scan | null>(null);
   const [loading, setLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [textOutput, setTextOutput] = useState<string>("");
 
   const handleFileUpload = useCallback(async (file: File, isBeforeScan: boolean) => {
     try {
       setLoading(true);
+      setError(null);
       const metadata: Partial<Scan> = {
         type: 'other' as const,
         bodyPart: 'unknown',
@@ -49,11 +106,22 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
 
       const scan = await uploadScan(file, metadata);
       const result = await analyzeScan(scan.id);
+      
+      console.log(`Scan ${isBeforeScan ? 'before' : 'after'} analysis result:`, result);
+      
+      // Ensure result has a findings array
+      const scanWithResult = { 
+        ...scan, 
+        result: result ? {
+          ...result,
+          findings: result.findings || []
+        } : undefined 
+      };
 
       if (isBeforeScan) {
-        setBeforeScan({ ...scan, result: result || undefined });
+        setBeforeScan(scanWithResult);
       } else {
-        setAfterScan({ ...scan, result: result || undefined });
+        setAfterScan(scanWithResult);
       }
     } catch (error) {
       console.error('Failed to upload scan:', error);
@@ -62,127 +130,235 @@ export const BeforeAfterUpload: React.FC<BeforeAfterUploadProps> = ({ onComparis
     }
   }, [uploadScan, analyzeScan]);
 
+  const [error, setError] = useState<string | null>(null);
+  
+  // Create a function to force scan analysis if needed
+  const ensureScanAnalyzed = useCallback(async (scan: Scan): Promise<Scan> => {
+    if (!scan) return scan;
+    
+    // If the scan already has a result with findings, return it
+    if (scan.result?.findings) {
+      console.log(`Scan ${scan.id} already has a result with findings`);
+      return scan;
+    }
+    
+    // Check if there's a result in scanResults that we can use
+    const existingResult = scanResults.find(result => result.scanId === scan.id);
+    if (existingResult) {
+      console.log(`Found existing result for scan ${scan.id}`);
+      const updatedScan = { 
+        ...scan, 
+        result: existingResult,
+        status: 'analyzed' as const
+      };
+      
+      // Update the scan state based on which scan it is
+      if (scan === beforeScan) {
+        setBeforeScan(updatedScan);
+      } else if (scan === afterScan) {
+        setAfterScan(updatedScan);
+      }
+      
+      return updatedScan;
+    }
+    
+    // If the scan has no result at all, try to analyze it
+    if (scan.status === 'uploaded') {
+      console.log(`Analyzing scan ${scan.id}...`);
+      try {
+        setLoading(true);
+        const result = await analyzeScan(scan.id);
+        if (result) {
+          const updatedScan = { 
+            ...scan, 
+            result, 
+            status: 'analyzed' as const 
+          };
+          
+          // Update the scan state based on which scan it is
+          if (scan === beforeScan) {
+            setBeforeScan(updatedScan);
+          } else if (scan === afterScan) {
+            setAfterScan(updatedScan);
+          }
+          
+          return updatedScan;
+        }
+      } catch (error) {
+        console.error(`Failed to analyze scan ${scan.id}:`, error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    
+    return scan;
+  }, [beforeScan, afterScan, analyzeScan, scanResults]);
+  
   const compareScans = useCallback(async () => {
-    if (!beforeScan?.result || !afterScan?.result) {
-      setError("Both scans must be uploaded and analyzed first");
+    console.log('Before scan:', beforeScan);
+    console.log('After scan:', afterScan);
+    
+    // Check if we have both scans
+    if (!beforeScan || !afterScan) {
+      setError("Both scans must be uploaded first");
       return;
     }
-
+    
     setLoading(true);
     setError(null);
     
     try {
-      const beforeFindings = beforeScan.result.findings || [];
-      const afterFindings = afterScan.result.findings || [];
+      // Ensure both scans are analyzed
+      const analyzedBeforeScan = await ensureScanAnalyzed(beforeScan);
+      const analyzedAfterScan = await ensureScanAnalyzed(afterScan);
       
-      // Calculate overall severity change
-      const severityLevels = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
-      const beforeSeverityLevel = severityLevels[beforeScan.result.severity as keyof typeof severityLevels] || 0;
-      const afterSeverityLevel = severityLevels[afterScan.result.severity as keyof typeof severityLevels] || 0;
+      // Check if analysis was successful
+      if (!analyzedBeforeScan.result || !analyzedAfterScan.result) {
+        setError("Failed to analyze one or both scans. Please try again.");
+        return;
+      }
       
-      // Find resolved and new issues
-      const resolvedIssues = beforeFindings.filter(
-        before => !afterFindings.some(after => after.area === before.area)
-      );
+      try {
+        // Create safe copies with all required properties initialized
+        // This approach completely avoids accessing potentially undefined properties
+        const safeBeforeResult = {
+          ...analyzedBeforeScan.result,
+          findings: Array.isArray(analyzedBeforeScan.result?.findings) ? analyzedBeforeScan.result.findings : [],
+          severity: typeof analyzedBeforeScan.result?.severity === 'string' ? analyzedBeforeScan.result.severity : 'normal',
+          confidenceScore: typeof analyzedBeforeScan.result?.confidenceScore === 'number' ? analyzedBeforeScan.result.confidenceScore : 0.5
+        };
+        
+        const safeAfterResult = {
+          ...analyzedAfterScan.result,
+          findings: Array.isArray(analyzedAfterScan.result?.findings) ? analyzedAfterScan.result.findings : [],
+          severity: typeof analyzedAfterScan.result?.severity === 'string' ? analyzedAfterScan.result.severity : 'normal',
+          confidenceScore: typeof analyzedAfterScan.result?.confidenceScore === 'number' ? analyzedAfterScan.result.confidenceScore : 0.5
+        };
+        
+        console.log('Created safe result objects with all required properties:');
+        console.log('Before scan safe result:', safeBeforeResult);
+        console.log('After scan safe result:', safeAfterResult);
+        
+        // Safe access to findings arrays
+        const beforeFindings = safeBeforeResult.findings;
+        const afterFindings = safeAfterResult.findings;
+        
+        // Safe severity values
+        const beforeSeverity = safeBeforeResult.severity;
+        const afterSeverity = safeAfterResult.severity;
+        
+        console.log('Before severity:', beforeSeverity);
+        console.log('After severity:', afterSeverity);
       
-      const newIssues = afterFindings.filter(
-        after => !beforeFindings.some(before => before.area === before.area)
-      );
-      
-      // Analyze changes in existing issues
-      const changedIssues = beforeFindings
-        .filter(before => afterFindings.some(after => after.area === before.area))
-        .map(before => {
-          const after = afterFindings.find(a => a.area === before.area)!;
-          const severityChange = severityLevels[after.severity as keyof typeof severityLevels] - 
-                               severityLevels[before.severity as keyof typeof severityLevels];
-          const confidenceChange = after.confidence - before.confidence;
-          
-          const change: 'improved' | 'worsened' | 'stable' = 
-            severityChange < 0 ? 'improved' : 
-            severityChange > 0 ? 'worsened' : 
-            'stable';
-          
-          return {
-            area: before.area,
-            before,
-            after,
-            change,
-            changePercentage: Math.abs(confidenceChange * 100)
-          };
+        // Define safe severity levels mapping
+        const severityLevels = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
+        
+        // Find resolved and new issues with proper error handling
+        const resolvedIssues = beforeFindings.filter(before => {
+          if (!before || !before.area) return false;
+          return !afterFindings.some(after => after && after.area === before.area);
         });
+        
+        const newIssues = afterFindings.filter(after => {
+          if (!after || !after.area) return false;
+          return !beforeFindings.some(before => before && before.area === after.area);
+        });
+        
+        console.log('Resolved issues:', resolvedIssues.length);
+        console.log('New issues:', newIssues.length);
+        
+        // Analyze changes in existing issues with defensive programming
+        const changedIssues = beforeFindings
+          .filter(before => {
+            if (!before || !before.area) return false;
+            return afterFindings.some(after => after && after.area === before.area);
+          })
+          .map(before => {
+            const after = afterFindings.find(a => a && a.area === before.area);
+            
+            if (!after) {
+              console.log('Warning: No matching after finding for', before.area);
+              return null;
+            }
+            
+            // Calculate change intensity using the new function
+            const changeAnalysis = calculateChangeIntensity(before, after);
+            
+            // Determine change type based on severity levels
+            const beforeSeverityLevel = severityLevels[before.severity as keyof typeof severityLevels] ?? 0;
+            const afterSeverityLevel = severityLevels[after.severity as keyof typeof severityLevels] ?? 0;
+            const severityChange = afterSeverityLevel - beforeSeverityLevel;
+            
+            const change: 'improved' | 'worsened' | 'stable' = 
+              severityChange < 0 ? 'improved' : 
+              severityChange > 0 ? 'worsened' : 
+              'stable';
+            
+            return {
+              area: before.area,
+              before,
+              after,
+              change,
+              changePercentage: changeAnalysis.intensity,
+              changeFactors: changeAnalysis.factors
+            };
+          })
+          .filter(Boolean) as any[]; // Remove nulls
       
-      // Calculate overall improvement percentage
-      const totalIssues = beforeFindings.length;
-      const resolvedCount = resolvedIssues.length;
-      const improvedCount = changedIssues.filter(issue => issue.change === 'improved').length;
-      const worsenedCount = changedIssues.filter(issue => issue.change === 'worsened').length + newIssues.length;
+        console.log('Changed issues:', changedIssues.length);
+        
+        // Safe calculation for improvement percentage
+        const totalIssues = Math.max(beforeFindings.length, 1); // Avoid division by zero
+        const resolvedCount = resolvedIssues.length;
+        const improvedCount = changedIssues.filter(issue => issue && issue.change === 'improved').length;
+        const worsenedCount = 
+          changedIssues.filter(issue => issue && issue.change === 'worsened').length + 
+          newIssues.length;
+        
+        console.log('Issue counts - Total:', totalIssues, 'Resolved:', resolvedCount, 
+                   'Improved:', improvedCount, 'Worsened:', worsenedCount);
+                   
+        // Calculate improvement score safely
+        const improvementScore = ((resolvedCount + improvedCount) - worsenedCount) / totalIssues;
+        const changePercentage = Math.abs(improvementScore * 100);
+        
+        console.log('Improvement score:', improvementScore, 'Change percentage:', changePercentage);
+        
+        // Determine overall change with safety checks
+        const overallChange: ComparisonResult['overallChange'] = 
+          improvementScore > 0 ? 'improved' : 
+          improvementScore < 0 ? 'worsened' : 
+          'stable';
       
-      const improvementScore = totalIssues > 0 ? 
-        ((resolvedCount + improvedCount) - worsenedCount) / totalIssues : 0;
-      const changePercentage = Math.abs(improvementScore * 100);
-      
-      // Determine overall change
-      const overallChange: ComparisonResult['overallChange'] = 
-        improvementScore > 0 ? 'improved' : 
-        improvementScore < 0 ? 'worsened' : 
-        'stable';
-      
-      // Generate recommendations based on changes
-      const recommendations = generateRecommendations(
-        overallChange,
-        newIssues,
-        changedIssues,
-        afterScan.result.severity
-      );
-      
-      // Create detailed summary
-      const summary = generateSummary(
-        overallChange,
-        changePercentage,
-        resolvedIssues,
-        newIssues,
-        changedIssues,
-        beforeScan.result.severity,
-        afterScan.result.severity
-      );
+        // Generate recommendations, summary, and analysis with safe parameters
+        const recommendations = generateRecommendations(
+          overallChange,
+          newIssues,
+          changedIssues,
+          afterSeverity
+        );
+        
+        const summary = generateSummary(
+          overallChange, 
+          changePercentage,
+          resolvedIssues, 
+          newIssues, 
+          changedIssues, 
+          beforeSeverity, 
+          afterSeverity
+        );
 
-      // Generate advanced AI analysis
-      const geminiAnalysis = generateGeminiAnalysis(
-        overallChange,
-        beforeScan.type || 'unknown',
-        beforeScan.bodyPart || 'unknown',
-        beforeFindings,
-        afterFindings,
-        beforeScan.result.severity,
-        afterScan.result.severity
-      );
+        const geminiAnalysis = generateGeminiAnalysis(
+          overallChange,
+          analyzedBeforeScan.type || 'unknown',
+          analyzedBeforeScan.bodyPart || 'unknown',
+          beforeFindings,
+          afterFindings,
+          beforeSeverity,
+          afterSeverity
+        );
       
-      // Generate a plain text output summarizing key changes
-      const plainTextOutput = `
-SCAN COMPARISON ANALYSIS:
--------------------------
-Scan Type: ${beforeScan.type?.toUpperCase() || 'Unknown'}
-Body Part: ${beforeScan.bodyPart?.toUpperCase() || 'Unknown'}
-Overall Change: ${overallChange.toUpperCase()}
-Change Percentage: ${changePercentage.toFixed(1)}%
-Severity Change: ${beforeScan.result.severity.toUpperCase()} → ${afterScan.result.severity.toUpperCase()}
-
-MAIN FINDINGS:
-${resolvedIssues.length > 0 ? `✓ ${resolvedIssues.length} resolved issues: ${resolvedIssues.map(i => i.area).join(', ')}` : '✓ No resolved issues'}
-${newIssues.length > 0 ? `⚠ ${newIssues.length} new issues: ${newIssues.map(i => i.area).join(', ')}` : '✓ No new issues detected'}
-${changedIssues.filter(i => i.change === 'improved').length > 0 ? `↗ ${changedIssues.filter(i => i.change === 'improved').length} improved areas: ${changedIssues.filter(i => i.change === 'improved').map(i => i.area).join(', ')}` : ''}
-${changedIssues.filter(i => i.change === 'worsened').length > 0 ? `↘ ${changedIssues.filter(i => i.change === 'worsened').length} worsened areas: ${changedIssues.filter(i => i.change === 'worsened').map(i => i.area).join(', ')}` : ''}
-
-ANALYSIS SUMMARY:
-${summary}
-
-KEY RECOMMENDATIONS:
-${recommendations.map(r => `• ${r}`).join('\n')}
-`;
-
-      setTextOutput(plainTextOutput);
-      
+      // Create result object and update state
       const result: ComparisonResult = {
         overallChange,
         changePercentage,
@@ -197,16 +373,58 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
       setComparisonResult(result);
       onComparisonComplete?.(result);
       
-    } catch (error) {
-      console.error('Failed to compare scans:', error);
-      setError(`Error comparing scans: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
+      // Display toast notification
+      addToast({
+        title: 'Comparison Complete',
+        description: `Analysis shows ${overallChange === 'improved' ? 'improvement' : overallChange === 'worsened' ? 'deterioration' : 'stability'} between the two scans.`,
+        type: overallChange === 'improved' ? 'success' : overallChange === 'worsened' ? 'warning' : 'default'
+      });
+      
+      // Update scan statuses - we only do this if we actually have valid scan objects with results
+      if (analyzedBeforeScan?.result && analyzedAfterScan?.result) {
+        // Create updated copies with the proper type assertions
+        const updatedBeforeScan = {...analyzedBeforeScan};
+        const updatedAfterScan = {...analyzedAfterScan};
+        
+        // Update before scan status if it's not already reviewed or completed
+        const beforeStatus = updatedBeforeScan.status;
+        if (beforeStatus !== 'reviewed' && beforeStatus !== 'completed') {
+          updatedBeforeScan.status = 'reviewed' as const;
+        }
+        
+        // Update after scan status if it's not already reviewed or completed
+        const afterStatus = updatedAfterScan.status;
+        if (afterStatus !== 'reviewed' && afterStatus !== 'completed') {
+          updatedAfterScan.status = 'reviewed' as const;
+        }
+        
+        // Update the state with our new copies
+        setBeforeScan(updatedBeforeScan);
+        setAfterScan(updatedAfterScan);
+      }
+      } catch (error) {
+        console.error('Failed to compare scans:', error);
+        setError(`Error comparing scans: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setLoading(false);
+      }
+    } catch (outerError) {
+      console.error('Outer error in scan comparison:', outerError);
+      setError(`Failed to run comparison: ${outerError instanceof Error ? outerError.message : String(outerError)}`);
       setLoading(false);
     }
-  }, [beforeScan, afterScan, onComparisonComplete]);
+  }, [beforeScan, afterScan, onComparisonComplete, ensureScanAnalyzed, addToast]);
+
+
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+          <strong className="font-bold">Error: </strong>
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Before Scan Upload */}
         <Card className="p-4">
@@ -289,7 +507,7 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
         </Card>
       </div>
 
-      <div className="flex flex-col items-center gap-4">
+      <div className="flex justify-center gap-4">
         <Button
           onClick={compareScans}
           disabled={!beforeScan || !afterScan || loading}
@@ -302,46 +520,7 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
           )}
           Compare Scans
         </Button>
-        
-        {error && (
-          <div className="text-red-500 text-sm mt-2">
-            Error: {error}
-          </div>
-        )}
       </div>
-
-      {/* Plain Text Output Section */}
-      {textOutput && (
-        <Card className="p-6 bg-white shadow-md border-blue-200 border-2">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <h3 className="text-xl font-semibold">Text Comparison Output</h3>
-            </div>
-            <Badge variant="outline" className="font-mono">AI-Generated</Badge>
-          </div>
-          
-          <div className="bg-gray-50 p-4 rounded-md border font-mono text-sm whitespace-pre-wrap overflow-x-auto">
-            {textOutput}
-          </div>
-          
-          <div className="mt-4 flex justify-end">
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => {
-                try {
-                  navigator.clipboard.writeText(textOutput);
-                } catch (e) {
-                  console.error("Failed to copy text", e);
-                }
-              }}
-              className="text-xs"
-            >
-              Copy Analysis Text
-            </Button>
-          </div>
-        </Card>
-      )}
 
       {comparisonResult && (
         <div className="space-y-6">
@@ -374,15 +553,41 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
               value={comparisonResult.changePercentage} 
               className={cn(
                 "h-2",
-                comparisonResult.overallChange === 'improved' ? "bg-green-500" :
-                comparisonResult.overallChange === 'worsened' ? "bg-red-500" :
-                "bg-gray-500"
+                comparisonResult.overallChange === 'improved' ? "bg-gradient-to-r from-green-200 to-green-500" :
+                comparisonResult.overallChange === 'worsened' ? "bg-gradient-to-r from-red-200 to-red-500" :
+                "bg-gradient-to-r from-gray-200 to-gray-500"
               )}
             />
             
             <p className="mt-4 text-muted-foreground">
               {comparisonResult.summary}
             </p>
+
+            <div className="mt-6 space-y-2 bg-muted/50 p-4 rounded-lg">
+              <h4 className="font-medium mb-3">Detailed Analysis</h4>
+              {generateDetailedAnalysis(
+                comparisonResult.overallChange,
+                comparisonResult.changePercentage,
+                beforeScan?.result?.severity || 'normal',
+                afterScan?.result?.severity || 'normal',
+                comparisonResult.resolvedIssues.length,
+                comparisonResult.newIssues.length,
+                comparisonResult.changedIssues.filter(i => i.change === 'improved').length,
+                comparisonResult.changedIssues.filter(i => i.change === 'worsened').length
+              ).map((point: string, index: number) => (
+                <div key={index} className="text-sm">
+                  {point.includes('•') ? (
+                    <div className="ml-4 space-y-1">
+                      {point.split('\n').map((subPoint: string, subIndex: number) => (
+                        <p key={`${index}-${subIndex}`} className="text-muted-foreground">{subPoint}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="font-medium">{point}</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </Card>
 
           {/* Detailed Changes */}
@@ -433,45 +638,111 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
             {comparisonResult.changedIssues.length > 0 && (
               <div className="mb-6">
                 <h4 className="text-lg font-medium mb-2">Changed Conditions</h4>
-                <div className="space-y-2">
+                <div className="space-y-4">
                   {comparisonResult.changedIssues.map((issue, index) => (
                     <div 
                       key={index} 
                       className={cn(
-                        "p-3 rounded-lg",
-                        issue.change === 'improved' ? "bg-green-50 dark:bg-green-900/20" :
-                        issue.change === 'worsened' ? "bg-red-50 dark:bg-red-900/20" :
-                        "bg-gray-50 dark:bg-gray-900/20"
+                        "p-4 rounded-lg border",
+                        issue.change === 'improved' ? "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800" :
+                        issue.change === 'worsened' ? "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800" :
+                        "bg-gray-50 dark:bg-gray-900/20 border-gray-200 dark:border-gray-800"
                       )}
                     >
-                      <div className="flex justify-between">
-                        <span className="font-medium">{issue.area}</span>
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <span className="font-medium text-lg">{issue.area}</span>
+                          <div className="text-sm text-muted-foreground mt-1">
+                            Severity: {issue.before.severity.toUpperCase()} → {issue.after.severity.toUpperCase()}
+                          </div>
+                        </div>
                         <Badge 
                           variant={
                             issue.change === 'improved' ? 'secondary' :
                             issue.change === 'worsened' ? 'destructive' :
                             'secondary'
                           }
+                          className="px-3"
                         >
-                          {issue.change === 'improved' && 'Improved'}
-                          {issue.change === 'worsened' && 'Worsened'}
-                          {issue.change === 'stable' && 'Stable'}
+                          {issue.change === 'improved' && (
+                            <TrendingDown className="w-3 h-3 mr-1" />
+                          )}
+                          {issue.change === 'worsened' && (
+                            <TrendingUp className="w-3 h-3 mr-1" />
+                          )}
+                          {issue.change === 'stable' && (
+                            <Minus className="w-3 h-3 mr-1" />
+                          )}
+                          {issue.change.charAt(0).toUpperCase() + issue.change.slice(1)}
                         </Badge>
                       </div>
-                      <div className="mt-2">
-                        <div className="flex justify-between text-sm">
-                          <span>Change Intensity:</span>
-                          <span>{issue.changePercentage.toFixed(1)}%</span>
+
+                      <div className="space-y-4">
+                        {/* Description Changes */}
+                        <div className="text-sm">
+                          <div className="font-medium mb-1">Description Changes:</div>
+                          <div className="grid grid-cols-2 gap-4 bg-background/50 p-2 rounded">
+                            <div>
+                              <div className="text-xs text-muted-foreground mb-1">Before:</div>
+                              <p>{issue.before.description}</p>
+                            </div>
+                            <div>
+                              <div className="text-xs text-muted-foreground mb-1">After:</div>
+                              <p>{issue.after.description}</p>
+                            </div>
+                          </div>
                         </div>
-                        <Progress 
-                          value={issue.changePercentage} 
-                          className={cn(
-                            "h-1 mt-1",
-                            issue.change === 'improved' ? "bg-green-500" :
-                            issue.change === 'worsened' ? "bg-red-500" :
-                            "bg-gray-500"
-                          )}
-                        />
+
+                        {/* Change Intensity */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span>Change Intensity:</span>
+                            <span className="font-medium">
+                              {issue.changePercentage}% 
+                              {issue.changePercentage >= 75 ? " (Major)" :
+                               issue.changePercentage >= 50 ? " (Significant)" :
+                               issue.changePercentage >= 25 ? " (Moderate)" :
+                               " (Minor)"}
+                            </span>
+                          </div>
+                          <Progress 
+                            value={issue.changePercentage} 
+                            className={cn(
+                              "h-2",
+                              issue.change === 'improved' ? "bg-gradient-to-r from-green-200 to-green-500" :
+                              issue.change === 'worsened' ? "bg-gradient-to-r from-red-200 to-red-500" :
+                              "bg-gradient-to-r from-gray-200 to-gray-500"
+                            )}
+                          />
+                          
+                          {/* Change Factors */}
+                          <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
+                            <div className="bg-background/50 p-2 rounded">
+                              <div className="text-xs text-muted-foreground">Severity Change</div>
+                              <div className="font-medium mt-1">{issue.changeFactors.severityChange}%</div>
+                              <Progress 
+                                value={issue.changeFactors.severityChange} 
+                                className="h-1 mt-1 bg-blue-500"
+                              />
+                            </div>
+                            <div className="bg-background/50 p-2 rounded">
+                              <div className="text-xs text-muted-foreground">Confidence Change</div>
+                              <div className="font-medium mt-1">{issue.changeFactors.confidenceChange}%</div>
+                              <Progress 
+                                value={issue.changeFactors.confidenceChange} 
+                                className="h-1 mt-1 bg-purple-500"
+                              />
+                            </div>
+                            <div className="bg-background/50 p-2 rounded">
+                              <div className="text-xs text-muted-foreground">Description Change</div>
+                              <div className="font-medium mt-1">{issue.changeFactors.descriptionChange}%</div>
+                              <Progress 
+                                value={issue.changeFactors.descriptionChange} 
+                                className="h-1 mt-1 bg-amber-500"
+                              />
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -490,80 +761,6 @@ ${recommendations.map(r => `• ${r}`).join('\n')}
                   <p>{recommendation}</p>
                 </div>
               ))}
-            </div>
-          </Card>
-
-          {/* Gemini AI Analysis */}
-          <Card className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-blue-100">
-                  <svg 
-                    width="24" 
-                    height="24" 
-                    viewBox="0 0 24 24" 
-                    fill="none" 
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="text-blue-600"
-                  >
-                    <path d="M11.9997 2L19.0793 5.5V13.5L11.9997 17L4.92969 13.5V5.5L11.9997 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M12 17V22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M4.92969 5.5L11.9997 9L19.0793 5.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M12 9L12 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="text-xl font-semibold">Gemini AI Analysis</h3>
-                  <p className="text-xs text-muted-foreground">Powered by advanced medical imaging AI</p>
-                </div>
-              </div>
-              
-              <div className="text-right text-sm">
-                <div className="font-semibold">Report ID: GEMINI-{Math.floor(Math.random() * 10000).toString().padStart(4, '0')}</div>
-                <div className="text-muted-foreground text-xs">Generated: {new Date().toLocaleDateString()}</div>
-              </div>
-            </div>
-            
-            <div className="flex items-center justify-between p-4 bg-blue-50 rounded-md mb-4 border border-blue-100">
-              <div>
-                <div className="text-sm"><span className="font-medium">Scan Type:</span> {beforeScan?.type?.toUpperCase() || 'N/A'}</div>
-                <div className="text-sm"><span className="font-medium">Body Part:</span> {beforeScan?.bodyPart?.toUpperCase() || 'N/A'}</div>
-              </div>
-              <div>
-                <div className={`text-sm px-3 py-1 rounded-full ${
-                  comparisonResult.overallChange === 'improved' ? 'bg-green-100 text-green-700' : 
-                  comparisonResult.overallChange === 'worsened' ? 'bg-red-100 text-red-700' :
-                  'bg-gray-100 text-gray-700'
-                }`}>
-                  Overall: <span className="font-medium capitalize">{comparisonResult.overallChange}</span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-sm"><span className="font-medium">Before Date:</span> {beforeScan?.uploadedAt ? new Date(beforeScan.uploadedAt).toLocaleDateString() : 'N/A'}</div>
-                <div className="text-sm"><span className="font-medium">After Date:</span> {afterScan?.uploadedAt ? new Date(afterScan.uploadedAt).toLocaleDateString() : 'N/A'}</div>
-              </div>
-            </div>
-            
-            <div className="bg-slate-50 rounded-md p-6 markdown-content border">
-              {comparisonResult.geminiAnalysis.split('\n').map((line, index) => {
-                // Heading levels
-                if (line.startsWith('## ')) {
-                  return <h2 key={index} className="text-xl font-bold mb-3 mt-6">{line.replace('## ', '')}</h2>;
-                } else if (line.startsWith('### ')) {
-                  return <h3 key={index} className="text-lg font-semibold mb-2 mt-4 text-blue-700">{line.replace('### ', '')}</h3>;
-                } else if (line.startsWith('1. ') || line.startsWith('2. ') || line.startsWith('3. ') || line.startsWith('4. ')) {
-                  return <div key={index} className="ml-6 mb-2 list-item">{line.replace(/^\d+\.\s/, '')}</div>;
-                } else if (line.trim() === '') {
-                  return <div key={index} className="h-2"></div>;
-                } else {
-                  return <p key={index} className="mb-3">{line}</p>;
-                }
-              })}
-            </div>
-            
-            <div className="mt-4 pt-4 border-t text-center text-xs text-muted-foreground">
-              This report was generated using Gemini AI and should be reviewed by a qualified healthcare professional.
-              <br />Analysis and recommendations are provided as decision support tools only.
             </div>
           </Card>
         </div>
@@ -630,8 +827,8 @@ function generateSummary(
   resolvedIssues: Finding[],
   newIssues: Finding[],
   changedIssues: ComparisonResult['changedIssues'],
-  beforeSeverity: string,
-  afterSeverity: string
+  beforeSeverity: string = 'normal',
+  afterSeverity: string = 'normal'
 ): string {
   let summary = '';
 
@@ -664,95 +861,151 @@ function generateSummary(
   return summary;
 }
 
-// Simulate Gemini AI enhanced comparison analysis
-const generateGeminiAnalysis = (
+// Helper function to generate AI-powered analysis of scan changes
+function generateGeminiAnalysis(
   overallChange: ComparisonResult['overallChange'],
-  scanType: string,
-  bodyPart: string,
-  beforeFindings: Finding[],
-  afterFindings: Finding[],
-  beforeSeverity: string,
-  afterSeverity: string
-): string => {
-  // This simulates what a Gemini API call would return
-  const changeStatus = 
-    overallChange === 'improved' ? 'has shown improvement' :
-    overallChange === 'worsened' ? 'has deteriorated' :
-    'remains stable';
+  scanType: string = 'unknown',
+  bodyPart: string = 'unknown',
+  beforeFindings: Finding[] = [],
+  afterFindings: Finding[] = [],
+  beforeSeverity: string = 'normal',
+  afterSeverity: string = 'normal'
+): string {
+  const changeDescription = {
+    improved: 'improvement',
+    worsened: 'deterioration',
+    stable: 'stability'
+  }[overallChange];
+
+  const beforeIssueCount = beforeFindings.length;
+  const afterIssueCount = afterFindings.length;
   
-  const severeFindings = afterFindings.filter(f => f.severity === 'high' || f.severity === 'critical');
-  const resolvedAreas = beforeFindings
-    .filter(before => !afterFindings.some(after => after.area === before.area))
-    .map(f => f.area);
+  let analysisText = `# Longitudinal Scan Analysis: ${scanType.toUpperCase()} of ${bodyPart.toUpperCase()}\n\n`;
   
-  const newAreas = afterFindings
-    .filter(after => !beforeFindings.some(before => before.area === after.area))
-    .map(f => f.area);
-
-  // Generate a detailed professional medical analysis
-  return `
-## Comparative Analysis Report: ${scanType.toUpperCase()} of ${bodyPart.toUpperCase()}
-
-### Executive Summary
-The patient's condition ${changeStatus} between the two examinations. The overall severity has changed from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()}, indicating a ${overallChange === 'improved' ? 'positive' : overallChange === 'worsened' ? 'concerning' : 'stable'} trajectory.
-
-### Detailed Findings
-The comparative analysis of the ${scanType} scans reveals significant changes in the ${bodyPart} region. ${
-  resolvedAreas.length > 0 
-    ? `Previously identified abnormalities in ${resolvedAreas.join(', ')} have resolved, suggesting therapeutic efficacy.` 
-    : ''
-} ${
-  newAreas.length > 0 
-    ? `New findings have emerged in ${newAreas.join(', ')}, which warrant clinical attention.` 
-    : 'No new concerning areas have been identified.'
+  // Add overall assessment
+  analysisText += `## OVERALL ASSESSMENT\n`;
+  analysisText += `The comparative analysis of your ${scanType} scans shows ${changeDescription} in your condition. `;
+  
+  if (overallChange === 'improved') {
+    analysisText += `There has been a positive progression from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()} severity level. `;
+    analysisText += `The number of detected issues has changed from ${beforeIssueCount} to ${afterIssueCount}.\n\n`;
+  } else if (overallChange === 'worsened') {
+    analysisText += `There has been a negative progression from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()} severity level. `;
+    analysisText += `The number of detected issues has changed from ${beforeIssueCount} to ${afterIssueCount}.\n\n`;
+  } else {
+    analysisText += `Your condition has remained largely unchanged at ${afterSeverity.toUpperCase()} severity level.\n\n`;
+  }
+  
+  // Add detailed findings section
+  analysisText += `## DETAILED FINDINGS\n`;
+  
+  // Resolved issues
+  const resolvedIssues = beforeFindings.filter(
+    before => !afterFindings.some(after => after.area === before.area)
+  );
+  
+  if (resolvedIssues.length > 0) {
+    analysisText += `### Resolved Issues (${resolvedIssues.length})\n`;
+    resolvedIssues.forEach(issue => {
+      analysisText += `- ${issue.area}: Previously ${issue.severity} severity finding is no longer detected.\n`;
+    });
+    analysisText += '\n';
+  }
+  
+  // New issues
+  const newIssues = afterFindings.filter(
+    after => !beforeFindings.some(before => before.area === after.area)
+  );
+  
+  if (newIssues.length > 0) {
+    analysisText += `### New Issues (${newIssues.length})\n`;
+    newIssues.forEach(issue => {
+      analysisText += `- ${issue.area}: New finding detected with ${issue.severity} severity.\n`;
+    });
+    analysisText += '\n';
+  }
+  
+  // Changed issues
+  const commonIssues = beforeFindings.filter(
+    before => afterFindings.some(after => after.area === before.area)
+  );
+  
+  if (commonIssues.length > 0) {
+    analysisText += `### Progression in Existing Issues (${commonIssues.length})\n`;
+    commonIssues.forEach(before => {
+      const after = afterFindings.find(a => a.area === before.area)!;
+      const changeDirection = before.severity === after.severity ? 'unchanged' :
+                              before.severity > after.severity ? 'improved' : 'worsened';
+      const changeIndicator = changeDirection === 'improved' ? '↓' :
+                             changeDirection === 'worsened' ? '↑' : '→';
+      
+      analysisText += `- ${before.area}: ${before.severity} ${changeIndicator} ${after.severity}\n`;
+      analysisText += `  * Confidence: ${Math.round(before.confidence * 100)}% → ${Math.round(after.confidence * 100)}%\n`;
+    });
+    analysisText += '\n';
+  }
+  
+  // Conclusion
+  analysisText += `## CONCLUSION\n`;
+  if (overallChange === 'improved') {
+    analysisText += 'The comparison indicates a positive trend in your condition. Continue with your current treatment plan as it appears to be effective.\n';
+  } else if (overallChange === 'worsened') {
+    analysisText += 'The comparison indicates a negative trend in your condition. A consultation with your healthcare provider is recommended to discuss adjustments to your treatment plan.\n';
+  } else {
+    analysisText += 'Your condition appears to be stable. Maintain your current treatment plan and continue regular monitoring.\n';
+  }
+  
+  return analysisText;
 }
 
-${
-  severeFindings.length > 0 
-    ? `Of particular concern are the ${severeFindings.length} high/critical severity findings in ${severeFindings.map(f => f.area).join(', ')}. These areas demonstrate ${
-        overallChange === 'worsened' ? 'progressive deterioration and may require urgent intervention.' : 'persistent abnormalities despite treatment.'
-      }`
-    : 'No high-severity findings are present in the current scan.'
+// Add helper function for calculating change intensity
+function calculateChangeIntensity(before: Finding, after: Finding): {
+  intensity: number;
+  factors: {
+    severityChange: number;
+    confidenceChange: number;
+    descriptionChange: number;
+  };
+} {
+  // Severity level mapping
+  const severityLevels = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
+  
+  // Calculate severity change (0-4 scale)
+  const beforeSeverityLevel = severityLevels[before.severity as keyof typeof severityLevels] ?? 0;
+  const afterSeverityLevel = severityLevels[after.severity as keyof typeof severityLevels] ?? 0;
+  const severityChange = Math.abs(afterSeverityLevel - beforeSeverityLevel) / 4; // Normalize to 0-1
+  
+  // Calculate confidence change (already 0-1)
+  const beforeConfidence = typeof before.confidence === 'number' ? before.confidence : 0;
+  const afterConfidence = typeof after.confidence === 'number' ? after.confidence : 0;
+  const confidenceChange = Math.abs(afterConfidence - beforeConfidence);
+  
+  // Calculate description similarity (basic change detection)
+  const beforeDesc = before.description || '';
+  const afterDesc = after.description || '';
+  const descriptionChange = beforeDesc === afterDesc ? 0 : 0.5;
+  
+  // Weighted combination of factors
+  const weights = {
+    severity: 0.5,    // Severity changes are most important
+    confidence: 0.3,  // Confidence changes are moderately important
+    description: 0.2  // Description changes are least important
+  };
+  
+  const intensity = (
+    (severityChange * weights.severity) +
+    (confidenceChange * weights.confidence) +
+    (descriptionChange * weights.description)
+  ) * 100; // Convert to percentage
+  
+  return {
+    intensity: Math.min(Math.round(intensity), 100),
+    factors: {
+      severityChange: Math.round(severityChange * 100),
+      confidenceChange: Math.round(confidenceChange * 100),
+      descriptionChange: Math.round(descriptionChange * 100)
+    }
+  };
 }
-
-### Radiological Interpretation
-The ${scanType} images demonstrate ${
-  overallChange === 'improved' 
-    ? 'reduction in pathological markers, with improved tissue architecture and diminished inflammatory response.'
-    : overallChange === 'worsened'
-      ? 'progression of pathological features, with increased tissue involvement and potential structural changes.'
-      : 'relatively unchanged pathological features, with similar tissue presentation across both timepoints.'
-}
-
-### Clinical Correlation
-These imaging findings ${
-  overallChange === 'improved'
-    ? 'correlate with a positive response to the current treatment regimen and suggest continuing the established therapeutic approach.'
-    : overallChange === 'worsened'
-      ? 'indicate suboptimal response to the current treatment regimen and suggest reevaluation of the therapeutic approach.'
-      : 'suggest a plateau in response to the current treatment regimen and may warrant consideration of treatment modifications.'
-}
-
-### Recommendations
-1. ${
-  overallChange === 'improved'
-    ? 'Continue current treatment protocol with regular monitoring.'
-    : overallChange === 'worsened'
-      ? 'Consider escalation of therapy and more frequent follow-up imaging.'
-      : 'Maintain vigilant monitoring while evaluating potential adjustments to treatment.'
-}
-2. Focus clinical attention on ${newAreas.length > 0 ? `newly identified areas: ${newAreas.join(', ')}` : 'maintaining current status'}.
-3. Schedule follow-up imaging in ${
-  overallChange === 'improved' ? '6-12 months' : overallChange === 'worsened' ? '3-6 months' : '4-8 months'
-} to reassess progression.
-4. ${
-  severeFindings.length > 0
-    ? `Prioritize evaluation of the ${severeFindings.length} high-severity findings.`
-    : 'Continue holistic evaluation of the entire region during follow-up.'
-}
-
-This analysis was performed using advanced medical imaging AI and should be interpreted in conjunction with clinical findings by a qualified healthcare professional.
-`;
-};
 
 export default BeforeAfterUpload; 

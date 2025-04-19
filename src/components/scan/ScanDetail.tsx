@@ -20,13 +20,7 @@ import {
   Heart,
   Activity,
   Stethoscope,
-  Bone,
-  SplitSquareVertical,
-  TrendingDown,
-  TrendingUp,
-  Minus,
-  RefreshCw,
-  ArrowRight
+  Bone
 } from 'lucide-react';
 import { useScan } from '@/context/ScanContext';
 import { useAuth } from '@/context/AuthContext';
@@ -49,7 +43,6 @@ import { format } from 'date-fns';
 import { downloadReportAsPDF } from '@/lib/pdfUtils';
 import { User, Scan, ScanResult, Report, Finding } from '@/types';
 import { BeforeAfterUpload } from './BeforeAfterUpload';
-import { cn } from '@/lib/utils';
 
 interface ScanDetailProps {
   scanId: string;
@@ -83,22 +76,6 @@ interface AIContext {
     abnormalitiesDetected: boolean;
     triagePriority: number;
   };
-}
-
-interface ComparisonResult {
-  overallChange: 'improved' | 'worsened' | 'stable';
-  changePercentage: number;
-  resolvedIssues: Finding[];
-  newIssues: Finding[];
-  changedIssues: Array<{
-    area: string;
-    before: Finding;
-    after: Finding;
-    change: 'improved' | 'worsened' | 'stable';
-    changePercentage: number;
-  }>;
-  summary: string;
-  recommendations: string[];
 }
 
 // Function to format analysis text with bullet points and highlights
@@ -355,7 +332,16 @@ export function ScanDetail({ scanId, onBack }: ScanDetailProps) {
 
   // Update handleGenerateReport function
   const handleGenerateReport = async () => {
-    if (!result || isGeneratingReport) return;
+    if (!result) {
+      addToast({
+        title: 'Error',
+        description: 'Please analyze the scan first before generating a report.',
+        type: 'warning'
+      });
+      return;
+    }
+    
+    if (isGeneratingReport) return;
     
     try {
       setIsGeneratingReport(true);
@@ -447,870 +433,6 @@ export function ScanDetail({ scanId, onBack }: ScanDetailProps) {
     }
   };
   
-  // CompareButton component
-  const CompareButton = ({ scan, result }: { scan: Scan; result?: ScanResult }) => {
-    console.log('=== COMPARE BUTTON INITIALIZATION ===');
-    console.log('Input scan:', scan);
-    console.log('Input result:', result);
-    
-    const { scans, scanResults } = useScan();
-    const { addToast } = useUI();
-    const [showCompareDialog, setShowCompareDialog] = useState(false);
-    const [compareScan, setCompareScan] = useState<Scan | null>(null);
-    const [compareResult, setCompareResult] = useState<ScanResult | null>(null);
-    const [loading, setLoading] = useState(false);
-    const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
-
-    // Debug logs for troubleshooting
-    console.log('CompareButton rendered', { 
-      scanId: scan?.id, 
-      resultId: result?.id,
-      comparableScansCount: scans.filter(s => 
-        s.id !== scan.id && 
-        s.type === scan.type && 
-        s.bodyPart === scan.bodyPart && 
-        s.status === 'analyzed'
-      ).length,
-      showCompareDialog
-    });
-
-    // Filter scans that are suitable for comparison
-    const comparableScans = scans.filter(s => 
-      s.id !== scan.id && 
-      s.type === scan.type && 
-      s.bodyPart === scan.bodyPart && 
-      s.status === 'analyzed'
-    );
-    
-    // Reset state when dialog opens/closes
-    useEffect(() => {
-      if (!showCompareDialog) {
-        setCompareScan(null);
-        setCompareResult(null);
-        setComparisonResult(null);
-      } else {
-        console.log('Dialog opened, comparable scans:', comparableScans);
-      }
-    }, [showCompareDialog, comparableScans]);
-
-    // Find result for the selected comparison scan
-    useEffect(() => {
-      if (compareScan) {
-        const foundResult = scanResults.find(r => r.scanId === compareScan.id);
-        console.log('Found comparison result', { 
-          compareResultId: foundResult?.id,
-          compareScanId: compareScan.id
-        });
-        setCompareResult(foundResult || null);
-      } else {
-        setCompareResult(null);
-      }
-    }, [compareScan, scanResults]);
-
-    // Function to select a scan for comparison
-    const handleSelectScan = (scan: Scan) => {
-      console.log('Selected comparison scan', scan.id);
-      setCompareScan(scan);
-    };
-
-    const compareScans = async () => {
-      if (!result || !compareResult) {
-        console.log('Cannot compare: missing result or comparison result', {
-          hasResult: !!result,
-          hasCompareResult: !!compareResult
-        });
-        return;
-      }
-
-      setLoading(true);
-      try {
-        console.log('Starting comparison between', {
-          currentScanId: scan.id,
-          compareScanId: compareScan?.id,
-          currentResultFindings: result.findings.length,
-          compareResultFindings: compareResult.findings.length
-        });
-        
-        const beforeFindings = compareResult.findings || [];
-        const afterFindings = result.findings || [];
-        
-        // Calculate overall severity change
-        const severityLevels = { normal: 0, low: 1, medium: 2, high: 3, critical: 4 };
-        const beforeSeverityLevel = severityLevels[compareResult.severity as keyof typeof severityLevels] || 0;
-        const afterSeverityLevel = severityLevels[result.severity as keyof typeof severityLevels] || 0;
-        
-        // Find resolved and new issues
-        const resolvedIssues = beforeFindings.filter(
-          before => !afterFindings.some(after => after.area === before.area)
-        );
-        
-        const newIssues = afterFindings.filter(
-          after => !beforeFindings.some(before => before.area === after.area)
-        );
-        
-        // Analyze changes in existing issues
-        const changedIssues = beforeFindings
-          .filter(before => afterFindings.some(after => after.area === before.area))
-          .map(before => {
-            const after = afterFindings.find(a => a.area === before.area)!;
-            const severityChange = severityLevels[after.severity as keyof typeof severityLevels] - 
-                                 severityLevels[before.severity as keyof typeof severityLevels];
-            const confidenceChange = after.confidence - before.confidence;
-            
-            const change: 'improved' | 'worsened' | 'stable' = 
-              severityChange < 0 ? 'improved' : 
-              severityChange > 0 ? 'worsened' : 
-              'stable';
-            
-            return {
-              area: before.area,
-              before,
-              after,
-              change,
-              changePercentage: Math.abs(confidenceChange * 100)
-            };
-          });
-        
-        // Calculate overall improvement percentage
-        const totalIssues = beforeFindings.length || 1; // Avoid division by zero
-        const resolvedCount = resolvedIssues.length;
-        const improvedCount = changedIssues.filter(issue => issue.change === 'improved').length;
-        const worsenedCount = changedIssues.filter(issue => issue.change === 'worsened').length + newIssues.length;
-        
-        const improvementScore = ((resolvedCount + improvedCount) - worsenedCount) / totalIssues;
-        const changePercentage = Math.abs(improvementScore * 100);
-        
-        // Determine overall change
-        const overallChange: ComparisonResult['overallChange'] = 
-          improvementScore > 0 ? 'improved' : 
-          improvementScore < 0 ? 'worsened' : 
-          'stable';
-        
-        // Generate recommendations based on changes
-        const recommendations = generateRecommendations(
-          overallChange,
-          newIssues,
-          changedIssues,
-          result.severity
-        );
-        
-        // Create detailed summary
-        const summary = generateSummary(
-          overallChange,
-          changePercentage,
-          resolvedIssues,
-          newIssues,
-          changedIssues,
-          compareResult.severity,
-          result.severity
-        );
-        
-        const compResult: ComparisonResult = {
-          overallChange,
-          changePercentage,
-          resolvedIssues,
-          newIssues,
-          changedIssues,
-          summary,
-          recommendations
-        };
-        
-        console.log('Comparison complete', {
-          overallChange,
-          changePercentage,
-          resolvedIssues: resolvedIssues.length,
-          newIssues: newIssues.length,
-          changedIssues: changedIssues.length
-        });
-        
-        setComparisonResult(compResult);
-        
-      } catch (error) {
-        console.error('Failed to compare scans:', error);
-        addToast({
-          title: 'Error',
-          description: 'Failed to compare scans. Please try again.',
-          type: 'error'
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    // Helper function to generate recommendations
-    const generateRecommendations = (
-      overallChange: ComparisonResult['overallChange'],
-      newIssues: Finding[],
-      changedIssues: ComparisonResult['changedIssues'],
-      currentSeverity: string
-    ): string[] => {
-      const recommendations: string[] = [];
-      
-      // Base recommendations on overall change
-      if (overallChange === 'improved') {
-        recommendations.push('Continue with the current treatment plan as it appears to be effective.');
-        
-        // If there are still issues, add specific recommendations
-        if (newIssues.length > 0 || changedIssues.some(i => i.change === 'worsened')) {
-          recommendations.push('Monitor the newly identified areas of concern at your next follow-up.');
-        }
-        
-        // Add recommendation based on severity
-        if (currentSeverity === 'normal' || currentSeverity === 'low') {
-          recommendations.push('Consider extending the interval between follow-up scans if clinically appropriate.');
-        }
-      } else if (overallChange === 'worsened') {
-        recommendations.push('Review current treatment plan with your healthcare provider.');
-        
-        // More specific recommendations based on severity
-        if (currentSeverity === 'high' || currentSeverity === 'critical') {
-          recommendations.push('Urgent consultation with specialist is recommended.');
-          recommendations.push('Consider additional diagnostic tests to further evaluate the areas of concern.');
-        } else {
-          recommendations.push('Schedule a follow-up scan in 3-6 months to monitor progression.');
-        }
-        
-        // Add specific recommendations for new issues
-        if (newIssues.length > 0) {
-          recommendations.push(`Pay particular attention to the ${newIssues.length} newly identified ${newIssues.length === 1 ? 'area' : 'areas'} of concern.`);
-        }
-      } else {
-        // Stable condition
-        recommendations.push('Continue routine monitoring as recommended by your healthcare provider.');
-        recommendations.push('Maintain current treatment regimen as the condition appears stable.');
-        
-        if (currentSeverity !== 'normal') {
-          recommendations.push('Regular follow-up scans are still advised to ensure no progression occurs.');
-        }
-      }
-      
-      return recommendations;
-    };
-
-    // Helper function to generate summary
-    const generateSummary = (
-      overallChange: ComparisonResult['overallChange'],
-      changePercentage: number,
-      resolvedIssues: Finding[],
-      newIssues: Finding[],
-      changedIssues: ComparisonResult['changedIssues'],
-      beforeSeverity: string,
-      afterSeverity: string
-    ): string => {
-      const improvedIssues = changedIssues.filter(issue => issue.change === 'improved');
-      const worsenedIssues = changedIssues.filter(issue => issue.change === 'worsened');
-      const stableIssues = changedIssues.filter(issue => issue.change === 'stable');
-      
-      // Generate more clinical insights
-      const clinicalInsights = generateClinicalInsights(
-        overallChange,
-        resolvedIssues,
-        newIssues,
-        changedIssues,
-        beforeSeverity,
-        afterSeverity
-      );
-      
-      let summary = '';
-      
-      if (overallChange === 'improved') {
-        summary = `Comparison shows an overall improvement of approximately ${Math.round(changePercentage)}% in the patient\'s condition. `;
-        
-        if (resolvedIssues.length > 0) {
-          summary += `${resolvedIssues.length} previously identified ${resolvedIssues.length === 1 ? 'issue has' : 'issues have'} resolved. `;
-        }
-        
-        if (improvedIssues.length > 0) {
-          summary += `${improvedIssues.length} ${improvedIssues.length === 1 ? 'area' : 'areas'} show improvement. `;
-        }
-        
-        if (beforeSeverity !== afterSeverity) {
-          summary += `Overall severity has changed from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()}. `;
-        }
-      } else if (overallChange === 'worsened') {
-        summary = `Comparison indicates a decline of approximately ${Math.round(changePercentage)}% in the patient\'s condition. `;
-        
-        if (newIssues.length > 0) {
-          summary += `${newIssues.length} new ${newIssues.length === 1 ? 'issue has' : 'issues have'} been identified. `;
-        }
-        
-        if (worsenedIssues.length > 0) {
-          summary += `${worsenedIssues.length} existing ${worsenedIssues.length === 1 ? 'area has' : 'areas have'} deteriorated. `;
-        }
-        
-        if (beforeSeverity !== afterSeverity) {
-          summary += `Overall severity has changed from ${beforeSeverity.toUpperCase()} to ${afterSeverity.toUpperCase()}. `;
-        }
-      } else {
-        summary = `Comparison shows a stable condition with no significant overall change. `;
-        
-        if (resolvedIssues.length > 0 && newIssues.length > 0) {
-          summary += `${resolvedIssues.length} ${resolvedIssues.length === 1 ? 'issue has' : 'issues have'} resolved and ${newIssues.length} new ${newIssues.length === 1 ? 'issue has' : 'issues have'} appeared. `;
-        } else if (stableIssues.length > 0) {
-          summary += `Most findings remain consistent with the previous scan. `;
-        }
-      }
-      
-      // Add in-depth clinical analysis
-      summary += clinicalInsights;
-      
-      return summary;
-    };
-
-    // Helper function to generate in-depth clinical insights
-    const generateClinicalInsights = (
-      overallChange: ComparisonResult['overallChange'],
-      resolvedIssues: Finding[],
-      newIssues: Finding[],
-      changedIssues: ComparisonResult['changedIssues'],
-      beforeSeverity: string,
-      afterSeverity: string
-    ): string => {
-      let insights = '\n\nDetailed Clinical Analysis: ';
-      
-      // Identify most significant changes (positive or negative)
-      const significantChanges = changedIssues
-        .filter(issue => issue.change !== 'stable')
-        .sort((a, b) => b.changePercentage - a.changePercentage)
-        .slice(0, 3);
-      
-      // Get most severe new issues
-      const severeNewIssues = newIssues
-        .filter(issue => issue.severity === 'critical' || issue.severity === 'high')
-        .slice(0, 2);
-      
-      // Get most significant resolved issues
-      const significantResolved = resolvedIssues
-        .filter(issue => issue.severity === 'critical' || issue.severity === 'high')
-        .slice(0, 2);
-      
-      if (overallChange === 'improved') {
-        insights += 'The imaging results indicate positive progress in the patient\'s condition. ';
-        
-        // Add specific improvement details
-        if (significantResolved.length > 0) {
-          insights += `Notable resolution observed in: ${significantResolved.map(f => f.area).join(', ')}. `;
-        }
-        
-        if (significantChanges.filter(c => c.change === 'improved').length > 0) {
-          const improvedAreas = significantChanges
-            .filter(c => c.change === 'improved')
-            .map(c => `${c.area} (from ${c.before.severity} to ${c.after.severity})`);
-          
-          insights += `Significant improvement seen in: ${improvedAreas.join(', ')}. `;
-        }
-        
-        // Analyze overall treatment effectiveness
-        insights += 'These improvements suggest effective therapeutic response. ';
-        
-        // Add caveats for new or worsened issues
-        if (severeNewIssues.length > 0 || changedIssues.some(c => c.change === 'worsened')) {
-          insights += 'However, ongoing monitoring is recommended for ';
-          
-          if (severeNewIssues.length > 0) {
-            insights += `newly identified ${severeNewIssues.map(f => f.area).join(', ')}`;
-          }
-          
-          if (severeNewIssues.length > 0 && changedIssues.some(c => c.change === 'worsened')) {
-            insights += ' and ';
-          }
-          
-          if (changedIssues.some(c => c.change === 'worsened')) {
-            const worsenedAreas = changedIssues
-              .filter(c => c.change === 'worsened')
-              .map(c => c.area);
-            
-            insights += `areas showing deterioration (${worsenedAreas.join(', ')})`;
-          }
-          
-          insights += '. ';
-        }
-      } else if (overallChange === 'worsened') {
-        insights += 'The imaging results suggest deterioration in the patient\'s condition that warrants careful attention. ';
-        
-        // Add specific deterioration details
-        if (severeNewIssues.length > 0) {
-          insights += `Concerning new findings in: ${severeNewIssues.map(f => `${f.area} (${f.severity})`).join(', ')}. `;
-        }
-        
-        if (significantChanges.filter(c => c.change === 'worsened').length > 0) {
-          const worsenedAreas = significantChanges
-            .filter(c => c.change === 'worsened')
-            .map(c => `${c.area} (from ${c.before.severity} to ${c.after.severity})`);
-          
-          insights += `Progressive worsening observed in: ${worsenedAreas.join(', ')}. `;
-        }
-        
-        // Analyze potential causes
-        insights += 'This progression may indicate insufficient therapeutic response or disease advancement. ';
-        
-        // Add potential action items
-        if (afterSeverity === 'critical' || afterSeverity === 'high') {
-          insights += 'Current findings justify reassessment of treatment approach and potentially more aggressive intervention. ';
-        } else {
-          insights += 'Consider adjusting current treatment plan and scheduling earlier follow-up imaging. ';
-        }
-        
-        // Note any positive changes
-        if (significantResolved.length > 0 || changedIssues.some(c => c.change === 'improved')) {
-          insights += 'Despite overall deterioration, some positive changes were observed in ';
-          
-          const improvedAreas = [
-            ...significantResolved.map(f => f.area),
-            ...changedIssues.filter(c => c.change === 'improved').map(c => c.area)
-          ];
-          
-          insights += `${improvedAreas.join(', ')}, suggesting partial therapeutic effect. `;
-        }
-      } else {
-        // Stable condition analysis
-        insights += 'The imaging results demonstrate stability in the patient\'s overall condition. ';
-        
-        if (significantChanges.length > 0 || resolvedIssues.length > 0 || newIssues.length > 0) {
-          insights += 'Although the overall condition is stable, there are localized changes: ';
-          
-          const changes = [];
-          
-          if (resolvedIssues.length > 0) {
-            changes.push(`resolution in ${resolvedIssues.map(f => f.area).join(', ')}`);
-          }
-          
-          if (newIssues.length > 0) {
-            changes.push(`new findings in ${newIssues.map(f => f.area).join(', ')}`);
-          }
-          
-          if (significantChanges.length > 0) {
-            const improved = significantChanges.filter(c => c.change === 'improved').map(c => c.area);
-            const worsened = significantChanges.filter(c => c.change === 'worsened').map(c => c.area);
-            
-            if (improved.length > 0) {
-              changes.push(`improvement in ${improved.join(', ')}`);
-            }
-            
-            if (worsened.length > 0) {
-              changes.push(`deterioration in ${worsened.join(', ')}`);
-            }
-          }
-          
-          insights += changes.join('; ') + '. ';
-          insights += 'These localized changes offset each other, resulting in overall stability. ';
-        } else {
-          insights += 'No significant changes observed in any of the previously identified areas, suggesting disease stabilization. ';
-        }
-        
-        // Add recommendation based on stability
-        if (afterSeverity === 'normal' || afterSeverity === 'low') {
-          insights += 'Maintenance of current therapeutic approach is recommended with routine follow-up.';
-        } else {
-          insights += 'While stability is reassuring, the persistent abnormalities warrant continued treatment and regular monitoring.';
-        }
-      }
-      
-      return insights;
-    };
-
-    if (!result) {
-      return null;
-    }
-    
-    // Ensure scans array is valid
-    const validComparableScans = Array.isArray(scans) ? scans.filter(s => 
-      s && s.id && s.id !== scan.id && 
-      s.type === scan.type && 
-      s.bodyPart === scan.bodyPart && 
-      s.status === 'analyzed'
-    ) : [];
-    
-    return (
-      <>
-        <Button 
-          variant="outline" 
-          onClick={() => {
-            console.log('Compare dialog button clicked');
-            setShowCompareDialog(true);
-          }}
-          disabled={validComparableScans.length === 0}
-        >
-          <SplitSquareVertical className="h-4 w-4 mr-2" /> Compare
-        </Button>
-        
-        {/* Compare Dialog */}
-        {showCompareDialog && (
-          <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-[100]">
-            <div className="fixed inset-x-4 top-[5%] bottom-[5%] md:inset-x-[10%] bg-background rounded-lg shadow-lg border p-6 overflow-hidden flex flex-col z-[101]">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold flex items-center">
-                  <SplitSquareVertical className="h-5 w-5 mr-2" />
-                  Compare Scans
-                </h2>
-                <Button variant="ghost" size="icon" onClick={() => setShowCompareDialog(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              
-              <div className="overflow-y-auto flex-1">
-                {!compareScan ? (
-                  <>
-                    <p className="text-muted-foreground mb-4">
-                      Select another {scan.type} scan of the {scan.bodyPart} to compare with the current scan.
-                    </p>
-                    
-                    {comparableScans.length > 0 ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                        {comparableScans.map(s => (
-                          <div 
-                            key={s.id}
-                            onClick={() => handleSelectScan(s)}
-                            className="border rounded-lg p-4 cursor-pointer hover:border-primary transition-colors"
-                          >
-                            <div className="flex items-start justify-between">
-                              <div>
-                                <h3 className="font-medium">{s.type.toUpperCase()} - {s.bodyPart}</h3>
-                                <p className="text-sm text-muted-foreground mt-1">
-                                  Uploaded on {format(new Date(s.uploadedAt), 'PPP')}
-                                </p>
-                              </div>
-                              {scanResults.find(r => r.scanId === s.id)?.severity && (
-                                <Badge className={cn(
-                                  scanResults.find(r => r.scanId === s.id)?.severity === 'critical' ? 'bg-red-500' :
-                                  scanResults.find(r => r.scanId === s.id)?.severity === 'high' ? 'bg-orange-500' :
-                                  scanResults.find(r => r.scanId === s.id)?.severity === 'medium' ? 'bg-yellow-500' :
-                                  'bg-blue-500'
-                                )}>
-                                  {scanResults.find(r => r.scanId === s.id)?.severity}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="mt-2 relative h-32 w-full">
-                              <img
-                                src={s.originalImage}
-                                alt={`${s.type} scan of ${s.bodyPart}`}
-                                className="object-contain w-full h-full"
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center py-8">
-                        <AlertTriangle className="mx-auto h-10 w-10 text-muted-foreground mb-2" />
-                        <p className="text-lg font-medium">No comparable scans found</p>
-                        <p className="text-muted-foreground mt-1">
-                          Upload another {scan.type} scan of the {scan.bodyPart} to compare with this one.
-                        </p>
-                      </div>
-                    )}
-                  </>
-                ) : !comparisonResult ? (
-                  <div className="space-y-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {/* Previous Scan */}
-                      <Card className="p-4">
-                        <div className="text-lg font-semibold mb-4">Previous Scan</div>
-                        <div className="space-y-4">
-                          <div className="relative h-48 w-full">
-                            <img
-                              src={compareScan.originalImage}
-                              alt="Previous scan"
-                              className="object-contain w-full h-full"
-                            />
-                          </div>
-                          <div className="text-sm">
-                            <p className="text-muted-foreground">Uploaded on {format(new Date(compareScan.uploadedAt), 'PPP')}</p>
-                            <Badge variant={compareResult?.severity === 'normal' ? 'secondary' : 'destructive'} className="mt-1">
-                              {compareResult?.severity.toUpperCase()}
-                            </Badge>
-                          </div>
-                        </div>
-                      </Card>
-
-                      {/* Current Scan */}
-                      <Card className="p-4">
-                        <div className="text-lg font-semibold mb-4">Current Scan</div>
-                        <div className="space-y-4">
-                          <div className="relative h-48 w-full">
-                            <img
-                              src={scan.originalImage}
-                              alt="Current scan"
-                              className="object-contain w-full h-full"
-                            />
-                          </div>
-                          <div className="text-sm">
-                            <p className="text-muted-foreground">Uploaded on {format(new Date(scan.uploadedAt), 'PPP')}</p>
-                            <Badge variant={result?.severity === 'normal' ? 'secondary' : 'destructive'} className="mt-1">
-                              {result?.severity.toUpperCase()}
-                            </Badge>
-                          </div>
-                        </div>
-                      </Card>
-                    </div>
-
-                    <div className="flex justify-center">
-                      <Button
-                        onClick={compareScans}
-                        disabled={!compareResult || !result || loading}
-                        className="gap-2"
-                      >
-                        {loading ? (
-                          <RefreshCw className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <ArrowRight className="h-4 w-4" />
-                        )}
-                        Compare Scans
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {/* Overall Change Indicator */}
-                    <Card className="p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-xl font-semibold">Overall Change</h3>
-                        <Badge 
-                          variant={
-                            comparisonResult.overallChange === 'improved' ? 'secondary' :
-                            comparisonResult.overallChange === 'worsened' ? 'destructive' :
-                            'secondary'
-                          }
-                          className="text-lg px-4 py-1"
-                        >
-                          {comparisonResult.overallChange === 'improved' && (
-                            <TrendingDown className="w-4 h-4 mr-2" />
-                          )}
-                          {comparisonResult.overallChange === 'worsened' && (
-                            <TrendingUp className="w-4 h-4 mr-2" />
-                          )}
-                          {comparisonResult.overallChange === 'stable' && (
-                            <Minus className="w-4 h-4 mr-2" />
-                          )}
-                          {comparisonResult.overallChange.toUpperCase()}
-                        </Badge>
-                      </div>
-                      
-                      <Progress 
-                        value={comparisonResult.changePercentage} 
-                        className={cn(
-                          "h-2",
-                          comparisonResult.overallChange === 'improved' ? "bg-green-500" :
-                          comparisonResult.overallChange === 'worsened' ? "bg-red-500" :
-                          "bg-gray-500"
-                        )}
-                      />
-                      
-                      <p className="mt-4 text-muted-foreground">
-                        {comparisonResult.summary.split('\n\nDetailed Clinical Analysis:')[0]}
-                      </p>
-                    </Card>
-
-                    {/* Clinical Analysis Section */}
-                    <Card className="p-4">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center">
-                          <div className={cn(
-                            "p-2 rounded-full mr-3",
-                            comparisonResult.overallChange === 'improved' ? "bg-green-100 dark:bg-green-900/30" : 
-                            comparisonResult.overallChange === 'worsened' ? "bg-red-100 dark:bg-red-900/30" : 
-                            "bg-blue-100 dark:bg-blue-900/30"
-                          )}>
-                            {comparisonResult.overallChange === 'improved' ? (
-                              <Stethoscope className={cn("h-5 w-5", "text-green-600 dark:text-green-400")} />
-                            ) : comparisonResult.overallChange === 'worsened' ? (
-                              <AlertTriangle className={cn("h-5 w-5", "text-red-600 dark:text-red-400")} />
-                            ) : (
-                              <Activity className={cn("h-5 w-5", "text-blue-600 dark:text-blue-400")} />
-                            )}
-                          </div>
-                          <h3 className="text-lg font-semibold">Clinical Analysis</h3>
-                        </div>
-                        
-                        <div className="flex items-center text-xs text-muted-foreground gap-3">
-                          <div className="flex items-center">
-                            <div className="h-2 w-2 rounded-full bg-green-500 mr-1"></div>
-                            <span>Improved</span>
-                          </div>
-                          <div className="flex items-center">
-                            <div className="h-2 w-2 rounded-full bg-red-500 mr-1"></div>
-                            <span>Worsened</span>
-                          </div>
-                          <div className="flex items-center">
-                            <div className="h-2 w-2 rounded-full bg-gray-500 mr-1"></div>
-                            <span>Stable</span>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className={cn(
-                        "p-4 rounded-md border-l-4",
-                        comparisonResult.overallChange === 'improved' ? "bg-green-50 dark:bg-green-900/20 border-green-500" : 
-                        comparisonResult.overallChange === 'worsened' ? "bg-red-50 dark:bg-red-900/20 border-red-500" : 
-                        "bg-blue-50 dark:bg-blue-900/20 border-blue-500"
-                      )}>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="font-semibold">
-                            {comparisonResult.overallChange === 'improved' ? 'Positive Change' : 
-                             comparisonResult.overallChange === 'worsened' ? 'Concerning Change' : 
-                             'Consistent Findings'}
-                          </h4>
-                          <div className={cn(
-                            "px-3 py-1 rounded-full text-sm font-bold",
-                            comparisonResult.overallChange === 'improved' ? "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400" : 
-                            comparisonResult.overallChange === 'worsened' ? "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-400" : 
-                            "bg-gray-100 text-gray-700 dark:bg-gray-900/50 dark:text-gray-400"
-                          )}>
-                            {comparisonResult.overallChange === 'improved' ? '+' : 
-                             comparisonResult.overallChange === 'worsened' ? '-' : 
-                             '±'}
-                            {Math.round(comparisonResult.changePercentage)}%
-                          </div>
-                        </div>
-                        <p className="text-sm leading-relaxed">
-                          {comparisonResult.summary.split('\n\nDetailed Clinical Analysis:')[1] || 'No detailed clinical analysis available.'}
-                        </p>
-                      </div>
-                    </Card>
-
-                    {/* Resolved Issues */}
-                    {comparisonResult.resolvedIssues.length > 0 && (
-                      <Card className="p-4">
-                        <h3 className="text-lg font-semibold mb-2">Resolved Issues</h3>
-                        <div className="space-y-2">
-                          {comparisonResult.resolvedIssues.map((finding) => (
-                            <div key={finding.id} className="p-3 bg-green-50 dark:bg-green-900/30 border-l-4 border-green-500 rounded-md">
-                              <div className="flex justify-between">
-                                <h4 className="font-medium">{finding.area}</h4>
-                                <Badge className="bg-green-500">Resolved</Badge>
-                              </div>
-                              <p className="text-sm mt-1">{finding.description}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* New Issues */}
-                    {comparisonResult.newIssues.length > 0 && (
-                      <Card className="p-4">
-                        <h3 className="text-lg font-semibold mb-2">New Issues</h3>
-                        <div className="space-y-2">
-                          {comparisonResult.newIssues.map((finding) => (
-                            <div key={finding.id} className="p-3 bg-red-50 dark:bg-red-900/30 border-l-4 border-red-500 rounded-md">
-                              <div className="flex justify-between">
-                                <h4 className="font-medium">{finding.area}</h4>
-                                <Badge className="bg-red-500">New</Badge>
-                              </div>
-                              <p className="text-sm mt-1">{finding.description}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* Changed Issues */}
-                    {comparisonResult.changedIssues.length > 0 && (
-                      <Card className="p-4">
-                        <h3 className="text-lg font-semibold mb-2">Changed Issues</h3>
-                        <div className="space-y-3">
-                          {comparisonResult.changedIssues.map((issue) => (
-                            <div 
-                              key={issue.area} 
-                              className={cn(
-                                "p-3 rounded-md border-l-4",
-                                issue.change === 'improved' ? "bg-green-50 dark:bg-green-900/30 border-green-500" :
-                                issue.change === 'worsened' ? "bg-red-50 dark:bg-red-900/30 border-red-500" :
-                                "bg-gray-50 dark:bg-gray-900/30 border-gray-500"
-                              )}
-                            >
-                              <div className="flex justify-between">
-                                <h4 className="font-medium">{issue.area}</h4>
-                                <Badge 
-                                  className={cn(
-                                    issue.change === 'improved' ? "bg-green-500" :
-                                    issue.change === 'worsened' ? "bg-red-500" :
-                                    "bg-gray-500"
-                                  )}
-                                >
-                                  {issue.change === 'improved' && (
-                                    <TrendingDown className="w-3 h-3 mr-1" />
-                                  )}
-                                  {issue.change === 'worsened' && (
-                                    <TrendingUp className="w-3 h-3 mr-1" />
-                                  )}
-                                  {issue.change === 'stable' && (
-                                    <Minus className="w-3 h-3 mr-1" />
-                                  )}
-                                  {issue.change.charAt(0).toUpperCase() + issue.change.slice(1)}
-                                </Badge>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4 mt-2">
-                                <div>
-                                  <p className="text-xs text-muted-foreground">Before</p>
-                                  <p className="text-sm">{issue.before.description}</p>
-                                  <Badge variant="outline" className="mt-1">{issue.before.severity}</Badge>
-                                </div>
-                                <div>
-                                  <p className="text-xs text-muted-foreground">Now</p>
-                                  <p className="text-sm">{issue.after.description}</p>
-                                  <Badge variant="outline" className="mt-1">{issue.after.severity}</Badge>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* Recommendations */}
-                    {comparisonResult.recommendations.length > 0 && (
-                      <Card className="p-4">
-                        <h3 className="text-lg font-semibold mb-2">Recommendations</h3>
-                        <ul className="list-disc pl-5 space-y-1">
-                          {comparisonResult.recommendations.map((rec, index) => (
-                            <li key={index} className="text-sm">{rec}</li>
-                          ))}
-                        </ul>
-                      </Card>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="pt-4 border-t mt-4 flex justify-between">
-                {compareScan && !comparisonResult && (
-                  <Button 
-                    variant="outline" 
-                    onClick={() => setCompareScan(null)}
-                  >
-                    <X className="h-4 w-4 mr-2" /> Back to scan selection
-                  </Button>
-                )}
-                {comparisonResult && (
-                  <Button 
-                    variant="outline" 
-                    onClick={() => {
-                      setComparisonResult(null);
-                      setCompareScan(null);
-                    }}
-                  >
-                    <X className="h-4 w-4 mr-2" /> Compare with different scan
-                  </Button>
-                )}
-                {(!compareScan || comparisonResult) && (
-                  <Button 
-                    variant="outline" 
-                    className="ml-auto"
-                    onClick={() => setShowCompareDialog(false)}
-                  >
-                    Close
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </>
-    );
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -1329,84 +451,60 @@ export function ScanDetail({ scanId, onBack }: ScanDetailProps) {
               </Button>
             </>
           )}
-          
-          {/* Add Compare button and debug button */}
-          {result && (
-            <>
-              <Button 
-                variant="outline"
-                onClick={() => {
-                  console.log('Debug compare button clicked');
-                  const dialog = document.createElement('div');
-                  dialog.style.position = 'fixed';
-                  dialog.style.top = '0';
-                  dialog.style.left = '0';
-                  dialog.style.width = '100%';
-                  dialog.style.height = '100%';
-                  dialog.style.backgroundColor = 'rgba(0,0,0,0.8)';
-                  dialog.style.zIndex = '9999';
-                  dialog.style.display = 'flex';
-                  dialog.style.justifyContent = 'center';
-                  dialog.style.alignItems = 'center';
-                  
-                  const content = document.createElement('div');
-                  content.style.backgroundColor = '#fff';
-                  content.style.padding = '20px';
-                  content.style.borderRadius = '8px';
-                  content.style.maxWidth = '80%';
-                  content.style.maxHeight = '80%';
-                  content.style.overflow = 'auto';
-                  content.innerHTML = `
-                    <h2>Comparison Dialog Test</h2>
-                    <p>This is a manual test of dialog rendering.</p>
-                    <p>Current scan: ${scan.id}</p>
-                    <p>Result: ${result.id}</p>
-                    <button id="close-debug-dialog">Close</button>
-                  `;
-                  
-                  dialog.appendChild(content);
-                  document.body.appendChild(dialog);
-                  
-                  document.getElementById('close-debug-dialog')?.addEventListener('click', () => {
-                    document.body.removeChild(dialog);
-                  });
-                }}
-              >
-                <SplitSquareVertical className="h-4 w-4 mr-2" /> Debug Compare
-              </Button>
-              <CompareButton scan={scan} result={result} />
-            </>
-          )}
         </div>
       </div>
       
-      {/* Add manual tab buttons for debugging */}
+      {/* Tab Navigation */}
       <div className="bg-muted/30 p-2 rounded flex flex-wrap gap-2 items-center">
-        <span className="text-sm text-muted-foreground">Manual tab switcher:</span>
         <Button 
           size="sm" 
           variant={activeTab === "image" ? "default" : "outline"} 
           onClick={() => handleTabChange("image")}
         >
+          <Layers className="h-4 w-4 mr-2" />
           Image
         </Button>
         <Button 
           size="sm" 
           variant={activeTab === "ai-analysis" ? "default" : "outline"} 
           onClick={() => handleTabChange("ai-analysis")}
-          disabled={!result}
+          disabled={!result || scan.status === 'uploaded'}
         >
+          <Brain className="h-4 w-4 mr-2" />
           AI Analysis
+          {!result && <span className="ml-2 text-xs">(Analyze First)</span>}
         </Button>
         <Button 
           size="sm" 
           variant={activeTab === "report" ? "default" : "outline"} 
           onClick={() => handleTabChange("report")}
-          disabled={!report}
         >
+          <FileHeart className="h-4 w-4 mr-2" />
           Report
+          {!report && result && <span className="ml-2 text-xs">(Report Preview)</span>}
         </Button>
-        <span className="text-xs text-muted-foreground ml-auto">Current tab: {activeTab}</span>
+        {!result && scan.status === 'uploaded' && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleAnalyze}
+            disabled={loading}
+          >
+            <Bot className="h-4 w-4 mr-2" />
+            {loading ? 'Analyzing...' : 'Start Analysis'}
+          </Button>
+        )}
+        {result && !report && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleGenerateReport}
+            disabled={isGeneratingReport}
+          >
+            <FileHeart className="h-4 w-4 mr-2" />
+            {isGeneratingReport ? 'Generating...' : 'Generate Report'}
+          </Button>
+        )}
       </div>
       
       <div className="text-xs text-muted-foreground">
